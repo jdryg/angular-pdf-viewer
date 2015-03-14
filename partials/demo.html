@@ -1,0 +1,25 @@
+<style>
+	.viewer_wrapper {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: 0;
+		right: 0;
+		overflow: auto;
+		margin-top: 30px;
+		background-color: #cccccc;
+	}
+</style>
+
+<button data-ng-click="zoomIn()">+</button>
+<button data-ng-click="zoomOut()">-</button>
+
+<div class="viewer_wrapper">
+	<pdf-viewer 
+		data-src="/pdf/demo.pdf" 
+		data-text-layer="true" 
+		data-scale="pdf_scale"
+		data-on-page-loaded="onPDFPageLoaded(page, total, state)" 
+		data-load-progress="onPDFLoadProgress(loaded, total, state)" >
+	</pdf-viewer>
+</div>

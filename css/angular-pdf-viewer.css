@@ -1,0 +1,54 @@
+::selection { background: rgba(0,0,255,0.3); }
+::-moz-selection { background:rgba(0,0,255,0.3); }
+
+pdf-viewer {
+	display: block;
+}
+
+pdf-viewer .page {
+	position: relative;
+	display: block;
+	margin: 10px auto;
+	box-shadow: 0px 0px 5px #666666;;
+	background-color: #ffffff;
+}
+
+pdf-viewer .text-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    overflow: hidden;
+    height: 1000px;
+}
+
+pdf-viewer .text-layer > div {	
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0% 0%;
+}
+
+pdf-viewer .text-layer .highlight {
+    margin: -1px;
+    padding: 1px;
+    background-color: rgba(180, 0, 170, 0.2);
+    border-radius: 4px;
+}
+
+pdf-viewer .text-layer .highlight.begin {
+    border-radius: 4px 0px 0px 4px;
+}
+
+pdf-viewer .text-layer .highlight.end {
+    border-radius: 0px 4px 4px 0px;
+}
+
+pdf-viewer .text-layer .highlight.middle {
+    border-radius: 0px;
+}
+
+pdf-viewer .text-layer .highlight.selected {
+    background-color: rgba(0, 100, 0, 0.2);
+}
