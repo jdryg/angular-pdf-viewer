@@ -4,7 +4,7 @@
 	angular.module("DemoApp.Controllers", []).
 	controller("DemoController", ["$scope", "$sce", function ($scope, $sce) {
 		$scope.pdf_url = "pdf/demo.pdf";
-		$scope.pdf_scale = "fit_page";
+		$scope.pdf_scale = "1.0";
 
 		$scope.onPDFPageLoaded = function (page, totalPages, state) {
 			console.log("onPDFPageLoaded(" + page + ", " + totalPages + ", " + state + ")");

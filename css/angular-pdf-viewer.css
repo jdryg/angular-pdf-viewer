@@ -9,7 +9,7 @@ pdf-viewer .page {
 	position: relative;
 	display: block;
 	margin: 10px auto;
-	box-shadow: 0px 0px 5px #666666;;
+	box-shadow: 0px 0px 10px #666666;;
 	background-color: #ffffff;
 }
 

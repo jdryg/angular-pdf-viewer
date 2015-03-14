@@ -5,40 +5,44 @@
 (function (angular, PDFJS) {
 	"use strict";
 
-	function calcPDFPageViewportScale(desiredScale, viewerWidth, viewerHeight, page)
-	{
-		if(desiredScale === "fit_width") {
-			var viewport = page.getViewport(1.0);
-
-			return viewerWidth / viewport.width;
-		} else if(desiredScale === "fit_page") {
-			var viewport = page.getViewport(1.0);
-
-			if(viewerHeight < viewerWidth) {
-				return viewerHeight / viewport.height;
-			} else {
-				return viewerWidth / viewport.width;
-			}
-		}
-
-		return parseFloat(desiredScale);
-	};
-
 	angular.module("angular-pdf-viewer", []).
-	directive("pdfViewer", function () {
+	directive("pdfViewer", [function () {
 		return {
 			restrict: "E",
 			scope: {
-				onPageLoaded: '&',
-				loadProgress: '&',
-				src: '@',
-				scale: '='
+				src: '@'
 			},
 			controller: ['$scope', '$element', function ($scope, $element) {
 				$scope.pdf = null;
-				$scope.originalScale = $scope.scale;
+				$scope.pages = [];
+				$scope.scale = "2.0";
 
-				$scope.documentProgress = function (progressData) {
+				var getContainerSize = function () {
+					var tallTempElement = angular.element("<div></div>");
+					tallTempElement.css("height", "10000px");
+					$element.append(tallTempElement);
+
+					var w = tallTempElement.width();
+
+					tallTempElement.remove();
+
+					var h = $element.height();
+					if(h === 0) {
+						// TODO: Should we get the parent height?
+						h = 20;
+					}
+					
+					// HACK: Allow some space around page.
+					w -= 20;
+					h -= 20;
+
+					return {
+						width: w,
+						height: h
+					};
+				};
+
+				var documentProgress = function (progressData) {
 					// JD: HACK: Sometimes (depending on the server serving the PDFs) PDF.js doesn't
 					// give us the total size of the document (total == undefined). In this case,
 					// we guess the total size in order to correctly show a progress bar if needed (even
@@ -52,134 +56,126 @@
 						total = progressData.total;
 					}
 
-					if ($scope.loadProgress) {
-						$scope.$apply(function () {
-							$scope.loadProgress({ state: "loading", loaded: progressData.loaded, total: total });
+					// TODO: Inform the client about the progress...
+					console.log("Downloaded " + progressData.loaded + " of " + total);
+				};
+
+				var passwordCallback = function (passwordFunc, reason) {
+					console.log("Password protected PDF. PDF.js reason: " + reason);
+
+					// TODO: Inform the client that this PDF is password protected...
+					passwordFunc("");
+				};
+				
+				var getAllPDFPages = function (pdf, callback) {
+					var pageList = [];
+
+					var remainingPages = pdf.numPages;
+					for(var iPage = 0;iPage < pdf.numPages;++iPage) {
+						pageList.push({
+							id: iPage + 1,
+							pdfPage: null,
+							element: null
+						});
+
+						var getPageTask = $scope.pdf.getPage(iPage + 1);
+						getPageTask.then(function (page) {
+							var pageContainer = angular.element("<div></div>");
+							pageContainer.addClass("page");
+							pageContainer.attr("id", "page_" + page.pageIndex);
+
+							var canvasElement = angular.element("<canvas></canvas>");
+							var textLayerElement = angular.element("<div></div>");
+							textLayerElement.addClass("text-layer");
+
+							pageContainer.append(canvasElement);
+							pageContainer.append(textLayerElement);
+
+							pageList[page.pageIndex].pdfPage = page;
+							pageList[page.pageIndex].element = pageContainer;
+
+							--remainingPages;
+							if(remainingPages === 0) {
+								callback(pageList);
+							}
 						});
 					}
 				};
+				
+				var resizePDFPageToScale = function (page, scale) {
+					var viewport = page.pdfPage.getViewport(scale);
 
-				$scope.passwordCallback = function (passwordFunc, reason) {
-					// TODO: Get the password from the caller.
-					passwordFunc("123456");
+					var canvasElement = page.element.find("canvas");
+					canvasElement.attr("width", viewport.width);
+					canvasElement.attr("height", viewport.height);
+
+					var textLayerElement = page.element.find("div");
+					textLayerElement.css("width", viewport.width + "px");
+					textLayerElement.css("height", viewport.height + "px");
+
+					page.element.css("width", viewport.width + "px");
 				};
+				
+				var calcPDFPageScale = function (pageList, desiredScale, containerWidth, containerHeight) {
+					if(desiredScale === "fit_width") {
+						// Find the widest page in the document and fit it to the container.
+						var numPages = pageList.length;
+						var maxWidth = pageList[0].pdfPage.getViewport(1.0).width;
+						for(var iPage = 1;iPage < numPages;++iPage) {
+							maxWidth = Math.max(maxWidth, $scope.pages[iPage].pdfPage.getViewport(1.0).width);
+						}
 
-				$scope.onPDFScaleChanged = function () {
-					// Remove all $element's children...
+						return containerWidth / maxWidth;
+					} else if(desiredScale === "fit_page") {
+						// Find the smaller dimension of the container and fit the 1st page to it.
+						var page0Viewport = pageList[0].pdfPage.getViewport(1.0);
+
+						if(containerHeight < containerWidth) {
+							return containerHeight / page0Viewport.height;
+						}
+
+						return containerWidth / page0Viewport.width;
+					}
+
+					return parseFloat(desiredScale);
+				};
+				
+				$scope.onContainerSizeChanged = function (containerSize) {
 					$element.empty();
 
-					if($scope.pdf === null) {
-						return;
+					var scale = calcPDFPageScale($scope.pages, $scope.scale, containerSize.width, containerSize.height);
+
+					var numPages = $scope.pages.length;
+					for(var iPage = 0;iPage < numPages;++iPage) {
+						resizePDFPageToScale($scope.pages[iPage], scale);
+						$element.append($scope.pages[iPage].element);
+						
+						// TODO: Render the page if it's in the viewport otherwise leave it for later...
 					}
-
-					// Render all pages...
-					for(var iPage = 1;iPage <= $scope.pdf.numPages;++iPage) {
-						// Create an empty page container div.
-						var pageContainer = angular.element("<div class='page'></div>");
-
-						// Append the page to the parent element...
-						$element.append(pageContainer);
-
-						$scope.renderPage($scope.pdf, iPage, $scope.scale, pageContainer);
-					}
-				};
-
-				$scope.onPDFContainerChanged = function () {
-					if($scope.pdf === null) {
-						return;
-					}
-
-					// Determine the scale for all the pages based on the scale of the 1st page...
-					var getPageTask = $scope.pdf.getPage(1);
-					getPageTask.then(function (page) {
-						var viewerWidth = $element.parent()[0].offsetWidth;
-						var viewerHeight = $element.parent()[0].offsetHeight;
-
-						// NOTE: Use the original scale here because otherwise we might incorrectly keep the
-						// PDF from scaling to fit the container's width (fit_width) or height (fit_page).
-						var scale = calcPDFPageViewportScale($scope.originalScale, viewerWidth, viewerHeight, page);
-
-						// Force the viewer to be updated by changing the scale.
-						$scope.$apply(function () {
-							// HACK: Setting a value to $scope.scale will trigger the $watch and the code
-							// will assume that the client is changing the scale (which means that we should 
-							// also change the $scope.originalScale). So, keep the old originalScale, change the scale
-							// and reset the originalScale to the old value.
-							var originalScale = $scope.originalScale;
-							$scope.scale = scale;
-							$scope.originalScale = originalScale;
-						});
-					});
 				};
 
 				$scope.onPDFSrcChanged = function () {
+					// TODO: Set the correct flag based on client's choice.
 					PDFJS.disableTextLayer = false;
 
 					// Remove all $element's children...
+					$scope.pages = [];
 					$element.empty();
 
-					var getDocumentTask = PDFJS.getDocument($scope.src, null, $scope.passwordCallback, $scope.documentProgress);
+					var getDocumentTask = PDFJS.getDocument($scope.src, null, passwordCallback, documentProgress);
 					getDocumentTask.then(function (pdf) {
 						$scope.pdf = pdf;
 
-						$scope.onPDFContainerChanged();
+						// Get all the pages...
+						getAllPDFPages(pdf, function (pageList) {
+							$scope.pages = pageList;
+
+							var containerSize = getContainerSize();
+							$scope.onContainerSizeChanged(containerSize);
+						});
 					}, function (message) {
-						// Inform the client that something went wrong we couldn't read the specified pdf.
-						if ($scope.loadProgress) {
-							$scope.$apply(function () {
-								$scope.loadProgress({ state: "error", loaded: 0, total: 0, message: message });
-							});
-						}
-					});
-				};
-
-				$scope.renderPage = function (pdfDoc, pageID, scale, pageContainer) {
-					var getPageTask = pdfDoc.getPage(pageID);
-					getPageTask.then(function (page) {
-						var canvasElement = angular.element("<canvas></canvas>");
-						var textLayerElement = angular.element("<div class='text-layer'></div>");
-
-						var viewport = page.getViewport(scale);
-
-						canvasElement.attr("width", viewport.width);
-						canvasElement.attr("height", viewport.height);
-
-						textLayerElement.css("width", viewport.width + "px");
-						textLayerElement.css("height", viewport.height + "px");
-
-						pageContainer.append(canvasElement);
-						pageContainer.append(textLayerElement);
-						pageContainer.css("width", viewport.width + "px");
-
-						// TODO: Execute this only if and when the canvas for this page enters the viewport...
-						var renderTask = page.render({
-							canvasContext: canvasElement[0].getContext('2d'),
-							viewport: viewport
-						});
-
-						renderTask.then(function () {
-							// TODO: Optional text layer...
-							var textContentTask = page.getTextContent();
-							textContentTask.then(function (textContent) {
-								var textLayerBuilder = new TextLayerBuilder({
-									textLayerDiv: textLayerElement[0],
-									pageIndex: pageID,
-									viewport: viewport
-								});
-
-								textLayerBuilder.setTextContent(textContent);
-								textLayerBuilder.renderLayer();
-
-								if($scope.onPageLoaded) {
-									$scope.onPageLoaded({ page: pageID, total: pdfDoc.numPages, state: "success" });
-								}
-							});
-						}, function (message) {
-							// Inform the client that something went wrong while rendering the specified page!
-							if($scope.onPageLoaded) {
-								$scope.onPageLoaded({ page: pageID, total: pdfDoc.numPages, state: "error", message: message });
-							}
-						});
+						// TODO: Inform the client that something went wrong and we couldn't read the specified pdf.
+						console.log("PDFJS.getDocument() failed. Message: " + message);
 					});
 				};
 			}],
@@ -190,13 +186,7 @@
 						scope.onPDFSrcChanged();
 					}
 				});
-
-				scope.$watch("scale", function (scale) {
-					console.log("PDF viewer: scale changed to " + scope.scale);
-					scope.originalScale = scope.scale;
-					scope.onPDFScaleChanged();
-				});
 			}
 		};
-	});
+	}]);
 })(angular, PDFJS);
