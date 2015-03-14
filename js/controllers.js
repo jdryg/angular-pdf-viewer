@@ -2,7 +2,8 @@
 	"use strict";
 	
 	angular.module("DemoApp.Controllers", []).
-	controller("DemoController", ["$scope", function ($scope) {
+	controller("DemoController", ["$scope", "$sce", function ($scope, $sce) {
+		$scope.pdf_url = "pdf/demo.pdf";
 		$scope.pdf_scale = "fit_page";
 
 		$scope.onPDFPageLoaded = function (page, totalPages, state) {
@@ -32,6 +33,10 @@
 		$scope.zoomOut = function () {
 			console.log("zoomOut(" + $scope.pdf_scale + ")");
 			$scope.pdf_scale /= 2.0;
+		};
+		
+		$scope.trustSrc = function(src) {
+			return $sce.trustAsResourceUrl(src);
 		};
 	}]);
 })(angular);

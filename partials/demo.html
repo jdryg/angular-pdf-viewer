@@ -15,8 +15,8 @@
 <button data-ng-click="zoomOut()">-</button>
 
 <div class="viewer_wrapper">
-	<pdf-viewer
-		data-src="pdf/demo.pdf" 
+	<pdf-viewer 
+		data-src="{{trustSrc(pdf_url)}}" 
 		data-text-layer="true" 
 		data-scale="pdf_scale"
 		data-on-page-loaded="onPDFPageLoaded(page, total, state)" 
