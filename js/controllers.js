@@ -3,8 +3,9 @@
 	
 	angular.module("DemoApp.Controllers", []).
 	controller("DemoController", ["$scope", "$sce", function ($scope, $sce) {
-		$scope.pdf_url = "pdf/demo.pdf";
-		$scope.pdf_scale = "1.0";
+		$scope.pdfViewerAPI = {};
+		$scope.pdfScale = 1.0;
+		$scope.pdfURL = "pdf/demo.pdf";
 
 		$scope.onPDFPageLoaded = function (page, totalPages, state) {
 			console.log("onPDFPageLoaded(" + page + ", " + totalPages + ", " + state + ")");
@@ -26,15 +27,15 @@
 		};
 
 		$scope.zoomIn = function () {
-			console.log("zoomIn(" + $scope.pdf_scale + ")");
-			$scope.pdf_scale *= 2.0;
+			console.log("zoomIn()");
+			$scope.pdfScale = $scope.pdfViewerAPI.zoomIn();
 		};
 
 		$scope.zoomOut = function () {
-			console.log("zoomOut(" + $scope.pdf_scale + ")");
-			$scope.pdf_scale /= 2.0;
+			console.log("zoomOut()");
+			$scope.pdfScale = $scope.pdfViewerAPI.zoomOut();
 		};
-		
+
 		$scope.trustSrc = function(src) {
 			return $sce.trustAsResourceUrl(src);
 		};

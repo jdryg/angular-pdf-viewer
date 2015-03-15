@@ -12,7 +12,10 @@
 
 <button data-ng-click="zoomIn()">+</button>
 <button data-ng-click="zoomOut()">-</button>
+<span>{{pdfScale}}</span>
 
 <pdf-viewer 
-	data-src="{{trustSrc(pdf_url)}}" >
+	data-src="{{trustSrc(pdfURL)}}"
+	data-initial-scale="fit_page"
+	data-api="pdfViewerAPI">
 </pdf-viewer>
