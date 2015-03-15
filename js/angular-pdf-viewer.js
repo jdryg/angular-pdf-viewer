@@ -15,7 +15,7 @@
 			controller: ['$scope', '$element', function ($scope, $element) {
 				$scope.pdf = null;
 				$scope.pages = [];
-				$scope.scale = "2.0";
+				$scope.scale = "fit_width";
 
 				var getContainerSize = function () {
 					var tallTempElement = angular.element("<div></div>");
