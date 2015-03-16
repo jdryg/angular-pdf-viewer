@@ -1,4 +1,8 @@
 <style>
+	body {
+		font-family: sans-serif;
+	}
+
 	pdf-viewer {
 		position: fixed;
 		top: 30px;
@@ -8,14 +12,61 @@
 		overflow: auto;
 		background-color: #cccccc;
 	}
+
+	#loader {
+		position: fixed;
+		top: 0;
+		bottom: 0;
+		left: 0;
+		right: 0;
+		overflow: hidden;
+		background-color: #ffffff;
+		z-index: 1000;
+	}
+
+	#loader div {
+		margin-top: 50px;
+		text-align: center;
+	}
+
+	#loader .progress-bar {
+		margin: 5px auto;
+	}
+
+	.progress-bar {
+		width: 200px;
+		height: 30px;
+		border: 1px solid #888888;
+		background-color: #ffffff;
+		overflow: hidden;
+	}
+	
+	.progress-bar span.bar {
+		display: inline-block;
+		background-color: #dddddd;
+		height: 100%;
+		text-align: left;
+	}
 </style>
 
-<button data-ng-click="zoomIn()">+</button>
+<div id="loader" data-ng-show="isLoading">
+	<div>Loading...</div>
+	<div class="progress-bar">
+		<span class='bar' data-ng-style='{width: downloadProgress + "%"}'></span>
+	</div>
+</div>
+
 <button data-ng-click="zoomOut()">-</button>
-<span>{{pdfScale}}</span>
+<select 
+	data-ng-model="pdfScale" 
+	data-ng-change="onPDFZoomLevelChanged()"
+	data-ng-options="zoom.value as zoom.label for zoom in pdfZoomLevels" >
+</select>
+<button data-ng-click="zoomIn()">+</button>
 
 <pdf-viewer 
 	data-src="{{trustSrc(pdfURL)}}"
 	data-initial-scale="fit_page"
-	data-api="pdfViewerAPI">
+	data-api="pdfViewerAPI"
+	data-progress-callback="onPDFProgress(operation, state, value, total, message)">
 </pdf-viewer>
