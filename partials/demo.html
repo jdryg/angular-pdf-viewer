@@ -47,6 +47,29 @@
 		height: 100%;
 		text-align: left;
 	}
+	
+	.zoom_wrapper,
+	.select_page_wrapper,
+	.demos_wrapper,
+	.load_file_wrapper {
+		display: inline-block;
+		margin: 3px 10px;
+	}
+	
+	.select_page_wrapper input[type="text"] {
+		width: 40px;
+		text-align: center;
+	}
+	
+	.demos_wrapper {
+		float: right;
+	}
+	
+	#toolbar {
+		border-bottom: 1px solid black;
+		height: 30px;
+		box-sizing: border-box;
+	}
 </style>
 
 <div id="loader" data-ng-show="isLoading">
@@ -56,16 +79,37 @@
 	</div>
 </div>
 
-<button data-ng-click="zoomOut()">-</button>
-<select 
-	data-ng-model="pdfScale" 
-	data-ng-change="onPDFZoomLevelChanged()"
-	data-ng-options="zoom.value as zoom.label for zoom in pdfZoomLevels" >
-</select>
-<button data-ng-click="zoomIn()">+</button>
+<div id="toolbar">
+	<div class="zoom_wrapper">
+		<button data-ng-click="zoomOut()">-</button>
+		<select 
+			data-ng-model="pdfScale" 
+			data-ng-change="onPDFZoomLevelChanged()"
+			data-ng-options="zoom.value as zoom.label for zoom in pdfZoomLevels" >
+		</select>
+		<button data-ng-click="zoomIn()">+</button>
+	</div>
+
+	<div class="select_page_wrapper">
+		<span>Page:</span>
+		<input type="text" data-ng-model="pdfCurrentPage" data-ng-change="onPDFPageChanged()"/> 
+		<span>of {{pdfTotalPages}}</span>
+	</div>
+
+	<div class="load_file_wrapper">
+		<input id="file_input" type="file" onchange="angular.element(this).scope().onPDFFileChanged()" accept=".pdf" />
+	</div>
+
+	<div class="demos_wrapper">
+		<span>Demo:</span>
+		<button data-ng-click="switchToPDF(0)">Small (13kB)</button>
+		<button data-ng-click="switchToPDF(1)">Large (1MB)</button>
+	</div>
+</div>
 
 <pdf-viewer 
-	data-src="{{trustSrc(pdfURL)}}"
+	data-src="{{pdfURL}}"
+	data-file="pdfFile"
 	data-initial-scale="fit_page"
 	data-api="pdfViewerAPI"
 	data-progress-callback="onPDFProgress(operation, state, value, total, message)">

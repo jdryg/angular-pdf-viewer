@@ -1,15 +1,18 @@
-(function (angular) {
+(function (angular, document) {
 	"use strict";
 
 	angular.module("DemoApp.Controllers", []).
 	controller("DemoController", ["$scope", "$sce", function ($scope, $sce) {
 		$scope.isLoading = false;
 		$scope.downloadProgress = 0;
-		
+
 		$scope.pdfZoomLevels = [];
 		$scope.pdfViewerAPI = {};
 		$scope.pdfScale = 1;
 		$scope.pdfURL = "";
+		$scope.pdfFile = null;
+		$scope.pdfTotalPages = 0;
+		$scope.pdfCurrentPage = 0;
 
 		$scope.onPDFProgress = function (operation, state, value, total, message) {
 			console.log("onPDFProgress(" + operation + ", " + state + ", " + value + ", " + total + ")");
@@ -29,7 +32,9 @@
 							lastScale = curScale.value;
 						} while(true);
 					}
-
+					
+					$scope.pdfCurrentPage = 1;
+					$scope.pdfTotalPages = $scope.pdfViewerAPI.getNumPages();
 					$scope.pdfScale = $scope.pdfViewerAPI.getZoomLevel();
 					$scope.isLoading = false;
 				} else {
@@ -48,6 +53,10 @@
 			$scope.pdfViewerAPI.zoomTo($scope.pdfScale);
 		};
 
+		$scope.onPDFPageChanged = function () {
+			$scope.pdfViewerAPI.goToPage($scope.pdfCurrentPage);
+		};
+
 		$scope.zoomIn = function () {
 //			console.log("zoomIn()");
 			var nextScale = $scope.pdfViewerAPI.getNextZoomInScale($scope.pdfScale);
@@ -63,16 +72,40 @@
 		};
 
 		$scope.loadPDF = function (pdfURL) {
+			if($scope.pdfURL === pdfURL) {
+				return;
+			}
+
 			$scope.isLoading = true;
 			$scope.downloadProgress = 0;
 			$scope.pdfZoomLevels = [];
+			$scope.pdfFile = null;
 			$scope.pdfURL = pdfURL;
+		};
+
+		$scope.onPDFFileChanged = function () {
+			$scope.isLoading = true;
+			$scope.downloadProgress = 0;
+			$scope.pdfZoomLevels = [];
+
+			$scope.$apply(function () {
+				$scope.pdfURL = "";
+				$scope.pdfFile = document.getElementById('file_input').files[0];
+			});
 		};
 
 		$scope.trustSrc = function(src) {
 			return $sce.trustAsResourceUrl(src);
 		};
 
+		$scope.switchToPDF = function (pdfID) {
+			if(pdfID === 0) {
+				$scope.loadPDF("pdf/demo.pdf");
+			} else if(pdfID === 1) {
+				$scope.loadPDF("pdf/demo_large.pdf");
+			}
+		};
+
 		$scope.loadPDF("pdf/demo.pdf");
 	}]);
-})(angular);
+})(angular, document);

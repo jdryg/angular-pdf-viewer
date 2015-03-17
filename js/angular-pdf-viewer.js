@@ -16,11 +16,14 @@
 			4.0, 4.5,
 			5.0
 		];
+		
+		var pageMargin = 10;
 			
 		return {
 			restrict: "E",
 			scope: {
 				src: "@",
+				file: "=",
 				api: "=",
 				initialScale: "@",
 				progressCallback: "&"
@@ -52,13 +55,13 @@
 					var h = $element[0].offsetHeight;
 					if(h === 0) {
 						// TODO: Should we get the parent height?
-						h = 20;
+						h = 2 * pageMargin;
 					}
 
 					// HACK: Allow some space around page.
 					// Q: Should this be configurable by the client?
-					w -= 20;
-					h -= 20;
+					w -= 2 * pageMargin;
+					h -= 2 * pageMargin;
 
 					return {
 						width: w,
@@ -332,6 +335,95 @@
 						}
 					});
 				};
+				
+				$scope.onPDFFileChanged = function () {
+					// TODO: Set the correct flag based on client's choice.
+					PDFJS.disableTextLayer = false;
+
+					// Since the PDF has changed we must clear the $element.
+					$scope.pages = [];
+					$element.empty();
+					
+					var reader = new FileReader();
+					
+					reader.onload = function(e) {
+						var arrayBuffer = e.target.result;
+						var uint8Array = new Uint8Array(arrayBuffer);
+
+						var getDocumentTask = PDFJS.getDocument(uint8Array, null, $scope.passwordCallback, $scope.downloadProgress);
+						getDocumentTask.then(function (pdf) {
+							$scope.pdf = pdf;
+
+							// Get all the pages...
+							$scope.getAllPDFPages(pdf, function (pageList) {
+								$scope.pages = pageList;
+
+								// Append all page containers to the $element...
+								for(var iPage = 0;iPage < pageList.length; ++iPage) {
+									$element.append($scope.pages[iPage].container);
+								}
+
+								var containerSize = $scope.getContainerSize();
+								$scope.onContainerSizeChanged(containerSize);
+							});
+						}, function (message) {
+							// Inform the client that something went wrong and we couldn't read the specified pdf.
+							if ($scope.progressCallback) {
+								$scope.$apply(function () {
+									$scope.progressCallback({ 
+										operation: "download",
+										state: "failed",
+										value: 0,
+										total: 0,
+										message: "PDF.js: " + message
+									});
+								});
+							}
+						});
+					};
+
+					reader.onprogress = function (e) {
+						$scope.downloadProgress(e);
+					};
+					
+					reader.onloadend = function (e) {
+						var error = e.target.error;
+						if(error !== null) {
+							var message = "File API error: ";
+							switch(e.code) {
+								case error.ENCODING_ERR:
+									message += "Encoding error.";
+									break;
+								case error.NOT_FOUND_ERR:
+									message += "File not found.";
+									break;
+								case error.NOT_READABLE_ERR:
+									message += "File could not be read.";
+									break;
+								case error.SECURITY_ERR:
+									message += "Security issue with file.";
+									break;
+								default:
+									message += "Unknown error.";
+									break;
+							}
+							
+							if ($scope.progressCallback) {
+								$scope.$apply(function () {
+									$scope.progressCallback({ 
+										operation: "download",
+										state: "failed",
+										value: 0,
+										total: 0,
+										message: message
+									});
+								});
+							}
+						}
+					};
+
+					reader.readAsArrayBuffer($scope.file);
+				};
 
 				$element.bind("scroll", function (event) {
 					$scope.renderAllVisiblePages();
@@ -411,6 +503,18 @@
 					},
 					goToPage: function (pageIndex) {
 						console.log("PDF viewer API: goToPage(" + pageIndex + ")");
+						if($scope.pdf === null || pageIndex < 1 || pageIndex > $scope.pdf.numPages) {
+							return;
+						}
+
+						$element[0].scrollTop = $scope.pages[pageIndex - 1].container[0].offsetTop - pageMargin;
+					},
+					getNumPages: function () {
+						if($scope.pdf === null) {
+							return 0;
+						}
+
+						return $scope.pdf.numPages;
 					}
 				};
 			}],
@@ -419,6 +523,12 @@
 					console.log("PDF viewer: src changed to " + src);
 					if (src !== undefined && src !== null && src !== '') {
 						scope.onPDFSrcChanged();
+					}
+				});
+				
+				scope.$watch("file", function (file) {
+					if(scope.file !== null) {
+						scope.onPDFFileChanged();
 					}
 				});
 			}
