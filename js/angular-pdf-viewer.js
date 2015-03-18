@@ -26,7 +26,8 @@
 				file: "=",
 				api: "=",
 				initialScale: "@",
-				progressCallback: "&"
+				progressCallback: "&",
+				passwordCallback: "&"
 			},
 			controller: ['$scope', '$element', function ($scope, $element) {
 				$scope.pdf = null;
@@ -97,9 +98,37 @@
 					}
 				};
 
-				$scope.passwordCallback = function (passwordFunc, reason) {
-					// TODO: Inform the client that this PDF is password protected...
-					passwordFunc("");
+				$scope.getPDFPassword = function (passwordFunc, reason) {
+					var password = "";
+					if($scope.passwordCallback) {
+						$scope.$apply(function () {
+							password = $scope.passwordCallback({reason: reason});
+							
+							if(password !== "" && password !== undefined && password !== null) {
+								passwordFunc(password);
+							} else {
+								if ($scope.progressCallback) {
+									$scope.progressCallback({ 
+										operation: "render",
+										state: "failed", 
+										value: 1, 
+										total: 0,
+										message: "A password is required to read this document."
+									});
+								}
+							}
+						});
+					} else {
+						if ($scope.progressCallback) {
+							$scope.progressCallback({ 
+								operation: "render",
+								state: "failed", 
+								value: 1, 
+								total: 0,
+								message: "A password is required to read this document."
+							});
+						}
+					}
 				};
 
 				$scope.getAllPDFPages = function (pdf, callback) {
@@ -304,7 +333,7 @@
 					$scope.pages = [];
 					$element.empty();
 
-					var getDocumentTask = PDFJS.getDocument($scope.src, null, $scope.passwordCallback, $scope.downloadProgress);
+					var getDocumentTask = PDFJS.getDocument($scope.src, null, $scope.getPDFPassword, $scope.downloadProgress);
 					getDocumentTask.then(function (pdf) {
 						$scope.pdf = pdf;
 
@@ -350,7 +379,7 @@
 						var arrayBuffer = e.target.result;
 						var uint8Array = new Uint8Array(arrayBuffer);
 
-						var getDocumentTask = PDFJS.getDocument(uint8Array, null, $scope.passwordCallback, $scope.downloadProgress);
+						var getDocumentTask = PDFJS.getDocument(uint8Array, null, $scope.getPDFPassword, $scope.downloadProgress);
 						getDocumentTask.then(function (pdf) {
 							$scope.pdf = pdf;
 

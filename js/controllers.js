@@ -39,6 +39,7 @@
 					$scope.isLoading = false;
 				} else {
 					alert("Failed to render 1st page!\n\n" + message);
+					$scope.isLoading = false;
 				}
 			} else if(operation === "download" && state === "loading") {
 				$scope.downloadProgress = (value / total) * 100.0;
@@ -92,6 +93,10 @@
 				$scope.pdfURL = "";
 				$scope.pdfFile = document.getElementById('file_input').files[0];
 			});
+		};
+		
+		$scope.onPDFPassword = function (reason) {
+			return prompt("The selected PDF is password protected. PDF.js reason: " + reason, "");
 		};
 
 		$scope.trustSrc = function(src) {
