@@ -13,6 +13,9 @@
 		$scope.pdfFile = null;
 		$scope.pdfTotalPages = 0;
 		$scope.pdfCurrentPage = 0;
+		$scope.pdfSearchTerm = "";
+		$scope.pdfSearchResultID = 0;
+		$scope.pdfSearchNumOccurences = 0;
 
 		$scope.onPDFProgress = function (operation, state, value, total, message) {
 			console.log("onPDFProgress(" + operation + ", " + state + ", " + value + ", " + total + ")");
@@ -80,14 +83,24 @@
 			$scope.isLoading = true;
 			$scope.downloadProgress = 0;
 			$scope.pdfZoomLevels = [];
+			$scope.pdfSearchTerm = "";
 			$scope.pdfFile = null;
 			$scope.pdfURL = pdfURL;
+		};
+				
+		$scope.findNext = function () {
+			$scope.pdfViewerAPI.findNext();
+		};
+		
+		$scope.findPrev = function () {
+			$scope.pdfViewerAPI.findPrev();
 		};
 
 		$scope.onPDFFileChanged = function () {
 			$scope.isLoading = true;
 			$scope.downloadProgress = 0;
 			$scope.pdfZoomLevels = [];
+			$scope.pdfSearchTerm = "";
 
 			$scope.$apply(function () {
 				$scope.pdfURL = "";

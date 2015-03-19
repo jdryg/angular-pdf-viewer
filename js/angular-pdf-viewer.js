@@ -2,7 +2,7 @@
  * angular-pdf-viewer v1.0.0
  * https://github.com/jdryg/angular-pdf-viewer
  */
-(function (angular, PDFJS) {
+(function (angular, PDFJS, document) {
 	"use strict";
 
 	angular.module("angular-pdf-viewer", []).
@@ -16,9 +16,9 @@
 			4.0, 4.5,
 			5.0
 		];
-		
+
 		var pageMargin = 10;
-			
+
 		return {
 			restrict: "E",
 			scope: {
@@ -26,8 +26,13 @@
 				file: "=",
 				api: "=",
 				initialScale: "@",
+				renderTextLayer: "@",
 				progressCallback: "&",
-				passwordCallback: "&"
+				passwordCallback: "&",
+				searchTerm: "@",
+				searchResultId: "=",
+				searchNumOccurences: "=",
+				currentPage: "="
 			},
 			controller: ['$scope', '$element', function ($scope, $element) {
 				$scope.pdf = null;
@@ -35,6 +40,7 @@
 				$scope.scale = 1.0;
 				$scope.fitWidthScale = 1.0;
 				$scope.fitPageScale = 1.0;
+				$scope.searchResults = [];
 
 				$scope.getContainerSize = function () {
 					// Create a tall temp element, add it to the $element
@@ -103,7 +109,7 @@
 					if($scope.passwordCallback) {
 						$scope.$apply(function () {
 							password = $scope.passwordCallback({reason: reason});
-							
+
 							if(password !== "" && password !== undefined && password !== null) {
 								passwordFunc(password);
 							} else {
@@ -130,39 +136,204 @@
 						}
 					}
 				};
+				
+				$scope.createPage = function (page, textContent) {
+					var pageContainer = angular.element("<div></div>");
+					pageContainer.addClass("page");
+					pageContainer.attr("id", "page_" + page.pageIndex);
+
+					var canvasElement = angular.element("<canvas></canvas>");
+					var textLayerElement = angular.element("<div></div>");
+					textLayerElement.addClass("text-layer");
+
+					return {
+						id: page.pageIndex + 1,
+						pdfPage: page,
+						textContent: textContent,
+						container: pageContainer,
+						canvas: canvasElement,
+						textLayer: textLayerElement,
+						rendered: false
+					};
+				};
+
+				$scope.shouldRenderTextLayer = function () {
+					if($scope.renderTextLayer === "" || $scope.renderTextLayer === undefined || $scope.renderTextLayer === null || $scope.renderTextLayer.toLowerCase() === "false") {
+						return false;
+					}
+
+					return true;
+				};
 
 				$scope.getAllPDFPages = function (pdf, callback) {
 					var pageList = [];
 
 					var remainingPages = pdf.numPages;
-					for(var iPage = 0;iPage < pdf.numPages;++iPage) {
-						pageList.push({});
+					if($scope.shouldRenderTextLayer()) {
+						for(var iPage = 0;iPage < pdf.numPages;++iPage) {
+							pageList.push({});
 
-						var getPageTask = $scope.pdf.getPage(iPage + 1);
-						getPageTask.then(function (page) {
-							var pageContainer = angular.element("<div></div>");
-							pageContainer.addClass("page");
-							pageContainer.attr("id", "page_" + page.pageIndex);
+							var getPageTask = pdf.getPage(iPage + 1);
+							getPageTask.then(function (page) {
+								var textContentTask = page.getTextContent();
+								textContentTask.then(function (textContent) {
+									pageList[page.pageIndex] = $scope.createPage(page, textContent);
 
-							var canvasElement = angular.element("<canvas></canvas>");
-							var textLayerElement = angular.element("<div></div>");
-							textLayerElement.addClass("text-layer");
+									--remainingPages;
+									if(remainingPages === 0) {
+										callback(pageList);
+									}
+								});
+							});
+						}
+					} else {
+						for(var iPage = 0;iPage < pdf.numPages;++iPage) {
+							pageList.push({});
 
-							pageList[page.pageIndex] = {
-								id: page.pageIndex + 1,
-								pdfPage: page,
-								container: pageContainer,
-								canvas: canvasElement,
-								textLayer: textLayerElement,
-								rendered: false
-							};
+							var getPageTask = pdf.getPage(iPage + 1);
+							getPageTask.then(function (page) {
+								pageList[page.pageIndex] = $scope.createPage(page, null);
 
-							--remainingPages;
-							if(remainingPages === 0) {
-								callback(pageList);
-							}
-						});
+								--remainingPages;
+								if(remainingPages === 0) {
+									callback(pageList);
+								}
+							});
+						}
 					}
+				};
+
+				$scope.clearPreviousHighlight = function () {
+					if($scope.searchResultId <= 0 || $scope.searchResultId > $scope.searchResults.length) {
+						return;
+					}
+
+					var result = $scope.searchResults[$scope.searchResultId - 1];
+					if(result === null) {
+						return;
+					}
+
+					var textLayer = $scope.pages[result.pageID].textLayer;
+					if(textLayer === null) {
+						return;
+					}
+
+					var textDivs = textLayer.children();
+					if(textDivs === null || textDivs.length === 0) {
+						return;
+					}
+
+					if(result.itemID < 0 || result.itemID >= textDivs.length) {
+						return;
+					}
+
+					var item = textDivs[result.itemID];
+					if(item.childNodes.length !== 3) {
+						return;
+					}
+
+					item.replaceChild(item.childNodes[1].firstChild, item.childNodes[1]);
+					item.normalize();
+				};
+
+				$scope.highlightItemInPage = function (pageID, itemID, matchPos, text) {
+					var textLayer = $scope.pages[pageID].textLayer;
+					if(textLayer === null) {
+						return;
+					}
+
+					var textDivs = textLayer.children();
+					var item = textDivs[itemID];
+
+					var before = item.childNodes[0].nodeValue.substr(0, matchPos);
+					var middle = item.childNodes[0].nodeValue.substr(matchPos, text.length);
+					var after = document.createTextNode(item.childNodes[0].nodeValue.substr(matchPos + text.length));
+					
+					var highlight_span = document.createElement("span");
+					highlight_span.className = "highlight";
+
+					highlight_span.appendChild(document.createTextNode(middle));
+
+					item.childNodes[0].nodeValue = before;
+					item.childNodes[0].parentNode.insertBefore(after, item.childNodes[0].nextSibling);
+					item.childNodes[0].parentNode.insertBefore(highlight_span, item.childNodes[0].nextSibling);
+					
+					item.scrollIntoView();
+				};
+
+				$scope.highlightSearchResult = function (resultID) {
+					$scope.clearPreviousHighlight();
+
+					if(resultID < 0 || resultID >= $scope.searchResults.length) {
+						return;
+					}
+
+					var result = $scope.searchResults[resultID];
+					if(result.pageID < 0 || result.pageID >= $scope.pages.length) {
+						return;
+					}
+
+					if(!$scope.pages[result.pageID].rendered) {
+						$scope.renderPDFPage(result.pageID, $scope.scale, function () {
+							$scope.highlightItemInPage(result.pageID, result.itemID, result.matchPos, $scope.searchTerm);
+							$scope.searchResultId = resultID + 1;
+						});
+					} else {
+						$scope.highlightItemInPage(result.pageID, result.itemID, result.matchPos, $scope.searchTerm);
+						$scope.searchResultId = resultID + 1;
+					}
+				};
+				
+				$scope.resetSearch = function () {
+					$scope.clearPreviousHighlight();
+					$scope.searchResults = [];
+					$scope.searchResultId = 0;
+					$scope.searchNumOccurences = 0;
+					$scope.searchTerm = "";
+				};
+
+				$scope.searchPDF = function (text) {
+					if(!$scope.shouldRenderTextLayer()) {
+						return 0;
+					}
+
+					$scope.clearPreviousHighlight();
+					$scope.resetSearch();
+					
+					$scope.searchTerm = text;
+
+					var regex = new RegExp(text, "i");
+
+					var numPages = $scope.pages.length;
+					for(var iPage = 0;iPage < numPages;++iPage) {
+						var pageTextContent = $scope.pages[iPage].textContent;
+						if(pageTextContent === null) {
+							continue;
+						}
+
+						var numItems = pageTextContent.items.length;
+						for(var iItem = 0;iItem < numItems;++iItem) {
+							// Find all occurrences of text in item string.
+							var itemStr = pageTextContent.items[iItem].str;
+							var matchPos = itemStr.search(regex);
+							while(matchPos > -1) {
+								$scope.searchResults.push({
+									pageID: iPage,
+									itemID: iItem,
+									matchPos: matchPos
+								});
+
+								itemStr = itemStr.substr(matchPos + text.length);
+								matchPos = itemStr.search(regex);
+							}
+						}
+					}
+
+					if($scope.searchResults.length > 0) {
+						$scope.highlightSearchResult(0);
+					}
+
+					$scope.searchNumOccurences =  $scope.searchResults.length;
 				};
 
 				$scope.resizePDFPageToScale = function (page, scale) {
@@ -214,7 +385,7 @@
 					return pageBottom >= 0 && pageTop <= $element[0].offsetHeight;
 				};
 
-				$scope.renderPDFPage = function (pageID, scale) {
+				$scope.renderPDFPage = function (pageID, scale, callback) {
 					var page = $scope.pages[pageID];
 					var viewport = page.pdfPage.getViewport(scale);
 
@@ -231,36 +402,38 @@
 					renderTask.then(function () {
 						page.container.append(page.canvas);
 
-						// TODO: Optional text layer...
-						var textContentTask = page.pdfPage.getTextContent();
-						textContentTask.then(function (textContent) {
+						if(page.textContent) {
 							var textLayerBuilder = new TextLayerBuilder({
 								textLayerDiv: page.textLayer[0],
 								pageIndex: pageID,
 								viewport: viewport
 							});
 
-							textLayerBuilder.setTextContent(textContent);
+							textLayerBuilder.setTextContent(page.textContent);
 							textLayerBuilder.renderLayer();
 
 							page.container.append(page.textLayer);
+						}
 
-							// Inform the client that the page has been rendered.
-							if ($scope.progressCallback) {
-								$scope.$apply(function () {
-									$scope.progressCallback({ 
-										operation: "render",
-										state: "success",
-										value: pageID + 1, 
-										total: $scope.pages.length,
-										message: ""
-									});
+						if(callback !== null) {
+							callback(pageID);
+						}
+
+						// Inform the client that the page has been rendered.
+						if ($scope.progressCallback) {
+							$scope.$apply(function () {
+								$scope.progressCallback({ 
+									operation: "render",
+									state: "success",
+									value: pageID + 1, 
+									total: $scope.pages.length,
+									message: ""
 								});
-							}
-						});
+							});
+						}
 					}, function (message) {
 						page.rendered = false;
-						
+
 						// Inform the client that something went wrong while rendering the specified page!
 						if ($scope.progressCallback) {
 							$scope.$apply(function () {
@@ -284,11 +457,22 @@
 					var atLeastOnePageInViewport = false;
 					for(var iPage = 0;iPage < numPages;++iPage) {
 						var page = $scope.pages[iPage];
+						
+						var inViewport = $scope.isPageInViewport(page.container);
+						if(inViewport) {
+							var pageTop = page.container[0].offsetTop - $element[0].scrollTop;
+							if(pageTop <= $element[0].offsetHeight / 2) {
+								(function (pageID) {
+									$scope.$apply(function () {
+										$scope.currentPage = pageID + 1;
+									});
+								})(iPage);
+							}
 
-						if(!page.rendered && $scope.isPageInViewport(page.container)) {
 							atLeastOnePageInViewport = true;
-
-							$scope.renderPDFPage(iPage, $scope.scale);
+							if(!page.rendered) {
+								$scope.renderPDFPage(iPage, $scope.scale, null);
+							}
 						} else {
 							if(atLeastOnePageInViewport) {
 								break;
@@ -313,6 +497,8 @@
 						$scope.resizePDFPageToScale(page, scale);
 					}
 
+					$scope.highlightSearchResult($scope.searchResultId - 1);
+
 					$scope.renderAllVisiblePages();
 				};
 
@@ -331,6 +517,7 @@
 
 					// Since the PDF has changed we must clear the $element.
 					$scope.pages = [];
+					$scope.resetSearch();
 					$element.empty();
 
 					var getDocumentTask = PDFJS.getDocument($scope.src, null, $scope.getPDFPassword, $scope.downloadProgress);
@@ -364,17 +551,18 @@
 						}
 					});
 				};
-				
+
 				$scope.onPDFFileChanged = function () {
 					// TODO: Set the correct flag based on client's choice.
 					PDFJS.disableTextLayer = false;
 
 					// Since the PDF has changed we must clear the $element.
 					$scope.pages = [];
+					$scope.resetSearch();
 					$element.empty();
-					
+
 					var reader = new FileReader();
-					
+
 					reader.onload = function(e) {
 						var arrayBuffer = e.target.result;
 						var uint8Array = new Uint8Array(arrayBuffer);
@@ -414,7 +602,7 @@
 					reader.onprogress = function (e) {
 						$scope.downloadProgress(e);
 					};
-					
+
 					reader.onloadend = function (e) {
 						var error = e.target.error;
 						if(error !== null) {
@@ -436,7 +624,7 @@
 									message += "Unknown error.";
 									break;
 							}
-							
+
 							if ($scope.progressCallback) {
 								$scope.$apply(function () {
 									$scope.progressCallback({ 
@@ -517,7 +705,6 @@
 						};
 					},
 					zoomTo: function (scale) {
-						console.log("PDF viewer API: zoomTo(" + scale + ")");
 						if(isNaN(parseFloat(scale))) {
 							// scale isn't a valid floating point number. Let
 							// calcPDFScale() handle it (e.g. fit_width or fit_page).
@@ -531,12 +718,11 @@
 						return $scope.scale;
 					},
 					goToPage: function (pageIndex) {
-						console.log("PDF viewer API: goToPage(" + pageIndex + ")");
 						if($scope.pdf === null || pageIndex < 1 || pageIndex > $scope.pdf.numPages) {
 							return;
 						}
 
-						$element[0].scrollTop = $scope.pages[pageIndex - 1].container[0].offsetTop - pageMargin;
+						$scope.pages[pageIndex - 1].container[0].scrollIntoView();
 					},
 					getNumPages: function () {
 						if($scope.pdf === null) {
@@ -544,23 +730,46 @@
 						}
 
 						return $scope.pdf.numPages;
+					},
+					findNext: function () {
+						var nextHighlightID = $scope.searchResultId + 1;
+						if(nextHighlightID > $scope.searchResults.length) {
+							nextHighlightID = 1;
+						}
+						
+						$scope.highlightSearchResult(nextHighlightID - 1);
+					},
+					findPrev: function () {
+						var prevHighlightID = $scope.searchResultId - 1;
+						if(prevHighlightID <= 0) {
+							prevHighlightID = $scope.searchResults.length;
+						}
+						
+						$scope.highlightSearchResult(prevHighlightID - 1);
 					}
 				};
 			}],
 			link: function (scope, element, attrs) {
 				attrs.$observe('src', function (src) {
-					console.log("PDF viewer: src changed to " + src);
 					if (src !== undefined && src !== null && src !== '') {
 						scope.onPDFSrcChanged();
 					}
 				});
-				
+
 				scope.$watch("file", function (file) {
 					if(scope.file !== null) {
 						scope.onPDFFileChanged();
 					}
 				});
+				
+				attrs.$observe("searchTerm", function (searchTerm) {
+					if (searchTerm !== undefined && searchTerm !== null && searchTerm !== '') {
+						scope.searchPDF(searchTerm);
+					} else {
+						scope.resetSearch();
+					}
+				});
 			}
 		};
 	}]);
-})(angular, PDFJS);
+})(angular, PDFJS, document);
