@@ -1,5 +1,5 @@
 /*
- * angular-pdf-viewer v1.0.0
+ * angular-pdf-viewer v1.1.0
  * https://github.com/jdryg/angular-pdf-viewer
  */
 (function (angular, PDFJS, document) {
@@ -18,6 +18,10 @@
 		];
 
 		var pageMargin = 10;
+
+		function trim1 (str) {
+			return str.replace(/^\s\s*/, '').replace(/\s\s*$/, '');
+		}
 
 		return {
 			restrict: "E",
@@ -312,18 +316,28 @@
 						}
 
 						var numItems = pageTextContent.items.length;
+						var numItemsSkipped = 0;
 						for(var iItem = 0;iItem < numItems;++iItem) {
 							// Find all occurrences of text in item string.
 							var itemStr = pageTextContent.items[iItem].str;
+							itemStr = trim1(itemStr);
+							if(itemStr.length === 0) {
+								numItemsSkipped++;
+								continue;
+							}
+							
 							var matchPos = itemStr.search(regex);
+							var itemStrStartIndex = 0;
 							while(matchPos > -1) {
 								$scope.searchResults.push({
 									pageID: iPage,
-									itemID: iItem,
-									matchPos: matchPos
+									itemID: iItem - numItemsSkipped,
+									matchPos: itemStrStartIndex + matchPos
 								});
 
 								itemStr = itemStr.substr(matchPos + text.length);
+								itemStrStartIndex += matchPos + text.length;
+
 								matchPos = itemStr.search(regex);
 							}
 						}
@@ -455,6 +469,7 @@
 					// the viewport. It helps with large PDFs.
 					var numPages = $scope.pages.length;
 					var atLeastOnePageInViewport = false;
+					var currentPageID = 0;
 					for(var iPage = 0;iPage < numPages;++iPage) {
 						var page = $scope.pages[iPage];
 						
@@ -462,11 +477,7 @@
 						if(inViewport) {
 							var pageTop = page.container[0].offsetTop - $element[0].scrollTop;
 							if(pageTop <= $element[0].offsetHeight / 2) {
-								(function (pageID) {
-									$scope.$apply(function () {
-										$scope.currentPage = pageID + 1;
-									});
-								})(iPage);
+								currentPageID = iPage;
 							}
 
 							atLeastOnePageInViewport = true;
@@ -479,6 +490,8 @@
 							}
 						}
 					}
+					
+					return currentPageID + 1;
 				};
 
 				$scope.onPDFScaleChanged = function (scale) {
@@ -499,7 +512,7 @@
 
 					$scope.highlightSearchResult($scope.searchResultId - 1);
 
-					$scope.renderAllVisiblePages();
+					$scope.currentPage = $scope.renderAllVisiblePages();
 				};
 
 				$scope.onContainerSizeChanged = function (containerSize) {
@@ -643,7 +656,10 @@
 				};
 
 				$element.bind("scroll", function (event) {
-					$scope.renderAllVisiblePages();
+					var curPageID = $scope.renderAllVisiblePages();
+					$scope.$apply(function () {
+						$scope.currentPage = curPageID;
+					});
 				});
 
 				// API...
