@@ -39,8 +39,9 @@ See partials/demo.html for details on the directive syntax and js/controllers.js
 TODO
 
 #### License
-Copyright © 2015 The owner of this repo.
+angular-pdf-viewer.js is copyright © 2015 The owner of this repo.
+The rest of the code (PDF.js, Angular.js, etc.) isn't covered by this license!
 
-This work is free. You can redistribute it and/or modify it under the terms of the Do What The Fuck You Want To Public License, Version 2, as published by Sam Hocevar. See the COPYING file for more details.
+angular-pdf-viewer.js is free. You can redistribute it and/or modify it under the terms of the Do What The Fuck You Want To Public License, Version 2, as published by Sam Hocevar. See the COPYING file for more details.
 
 [WTFPL](http://www.wtfpl.net/)
