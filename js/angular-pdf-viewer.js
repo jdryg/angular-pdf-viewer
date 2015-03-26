@@ -529,8 +529,8 @@
 					PDFJS.disableTextLayer = false;
 
 					// Since the PDF has changed we must clear the $element.
-					$scope.pages = [];
 					$scope.resetSearch();
+					$scope.pages = [];
 					$element.empty();
 
 					var getDocumentTask = PDFJS.getDocument($scope.src, null, $scope.getPDFPassword, $scope.downloadProgress);
@@ -570,8 +570,8 @@
 					PDFJS.disableTextLayer = false;
 
 					// Since the PDF has changed we must clear the $element.
-					$scope.pages = [];
 					$scope.resetSearch();
+					$scope.pages = [];
 					$element.empty();
 
 					var reader = new FileReader();
@@ -773,7 +773,7 @@
 				});
 
 				scope.$watch("file", function (file) {
-					if(scope.file !== null) {
+					if(scope.file !== undefined && scope.file !== null) {
 						scope.onPDFFileChanged();
 					}
 				});
