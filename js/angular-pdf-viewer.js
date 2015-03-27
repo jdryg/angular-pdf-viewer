@@ -1,4 +1,5 @@
 /*
+ * angular-pdf-viewer v1.1.2
  * https://github.com/jdryg/angular-pdf-viewer
  */
 (function (angular, PDFJS, document) {
