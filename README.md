@@ -5,7 +5,7 @@ Just another Angular directive for displaying PDF files using PDF.js
 
 #### Features
 - Continuous view (all pages are inserted into the DOM when the PDF is loaded)
-- Lazy page rendering (render a page only when it enters the viewport for the first time).
+- Lazy page rendering (render a page only when it enters the viewport for the first time. As of v1.1.2 pages far away from the current viewport are removed, to minimize memory usage; it seems to help with large PDF files).
 - Text layer (optional)
 - Zoom to
  * Value
@@ -37,6 +37,10 @@ See partials/demo.html for details on the directive syntax and js/controllers.js
 #### Styling
 
 TODO
+
+#### Dependencies
+- Angular.js
+- PDF.js (including text_layer_builder.js and ui_utils.js from the src distribution)
 
 #### License
 angular-pdf-viewer.js is copyright © 2015 The owner of this repo.
