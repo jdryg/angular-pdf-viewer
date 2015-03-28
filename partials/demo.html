@@ -52,7 +52,8 @@
 	.select_page_wrapper,
 	.demos_wrapper,
 	.load_file_wrapper,
-	.search_wrapper {
+	.search_wrapper,
+	.print_wrapper {
 		display: inline-block;
 		margin: 3px 10px;
 	}
@@ -102,12 +103,18 @@
 	</div>
 
 	<div class="search_wrapper">
-		<input type="text" data-ng-model="pdfSearchTerm" placeholder="Search..."/>
+		<form data-ng-submit="findNext()" style="display: inline-block;">
+			<input type="text" data-ng-model="pdfSearchTerm" placeholder="Search..."/>
+		</form>
 		<span data-ng-show="pdfSearchTerm !== ''">{{pdfSearchResultID}} of {{pdfSearchNumOccurences}}</span>
 		<button data-ng-click="findPrev()">&lt;</button>
 		<button data-ng-click="findNext()">&gt;</button>
 	</div>
-
+<!--
+	<div class="print_wrapper">
+		<button data-ng-click="printPDF()">Print PDF</button>
+	</div>
+-->
 	<div class="demos_wrapper">
 		<span>Demo:</span>
 		<button data-ng-click="switchToPDF(0)">Small (13kB)</button>

@@ -111,6 +111,10 @@
 		$scope.onPDFPassword = function (reason) {
 			return prompt("The selected PDF is password protected. PDF.js reason: " + reason, "");
 		};
+		
+//		$scope.printPDF = function () {
+//			$scope.pdfViewerAPI.print();
+//		};
 
 		$scope.trustSrc = function(src) {
 			return $sce.trustAsResourceUrl(src);
