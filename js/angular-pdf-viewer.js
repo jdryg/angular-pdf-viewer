@@ -118,10 +118,12 @@
 				var _ctrl = this;
 
 				_ctrl.pages = [];
+				_ctrl.scale = 1.0;
 				_ctrl.searchResults = [];
+				_ctrl.searchTerm = "";
+				_ctrl.searchHighlightResultID = -1;
 				
 				$scope.pdf = null;
-				$scope.scale = 1.0;
 				$scope.fitWidthScale = 1.0;
 				$scope.fitPageScale = 1.0;
 				$scope.searching = false;
@@ -236,7 +238,7 @@
 
 							return;
 						}
-						
+
 						var viewport = page.pdfPage.getViewport(scale);
 
 						page.rendered = true;
@@ -245,7 +247,7 @@
 							canvasContext: page.canvas[0].getContext('2d'),
 							viewport: viewport
 						});
-						
+
 						page.renderTask.then(function () {
 							page.rendered = true;
 							page.renderTask = null;
@@ -276,7 +278,7 @@
 
 								annotationLayerBuilder.setupAnnotations(viewport);
 							}
-							
+
 							resolve({
 								pageID: page.id,
 								status: 1 // TODO: Make this a constant. Means "Page rendered"
@@ -342,7 +344,7 @@
 						parentContainer.scrollTop -= containerHeight / 4;
 					}
 				};
-				
+
 				_ctrl.PDFViewer_getAllPages = function (pdf, hasTextLayer, callback) {
 					var self = this,
 					    pageList = [],
@@ -433,13 +435,28 @@
 					return scale;
 				};
 
-				// TODO: resultID goes from 1 to searchResults.length. 
-				_ctrl.PDFViewer_clearSearchHighlight = function (resultID) {
-					if(resultID <= 0 || resultID > this.searchResults.length) {
+				_ctrl.PDFViewer_setScale = function (scale) {
+					this.scale = scale;
+
+					var numPages = this.pages.length;
+					for(var iPage = 0;iPage < numPages;++iPage) {
+						// Clear the page's contents...
+						this.PDFPage_clear(this.pages[iPage]);
+
+						// Resize to current scale...
+						this.PDFPage_resizeToScale(this.pages[iPage], scale);
+					}
+				};
+
+				_ctrl.PDFViewer_clearLastSearchHighlight = function () {
+					var resultID = this.searchHighlightResultID;
+					if(resultID < 0 || resultID >= this.searchResults.length) {
 						return;
 					}
 
-					var result = this.searchResults[resultID - 1];
+					this.searchHighlightResultID = -1;
+
+					var result = this.searchResults[resultID];
 					if(result === null) {
 						return;
 					}
@@ -468,7 +485,10 @@
 				};
 
 				_ctrl.PDFViewer_resetSearch = function () {
+					this.PDFViewer_clearLastSearchHighlight();
 					this.searchResults = [];
+					this.searchTerm = "";
+					this.searchHighlightResultID = -1;
 				};
 
 				function trim1 (str) {
@@ -477,6 +497,7 @@
 
 				_ctrl.PDFViewer_search = function (text) {
 					this.PDFViewer_resetSearch();
+					this.searchTerm = text;
 
 					var regex = new RegExp(text, "i");
 
@@ -517,7 +538,39 @@
 
 					return this.searchResults.length;
 				};
-				
+
+				_ctrl.PDFViewer_highlightSearchResult = function (resultID) {
+					var self = this;
+
+					return new Promise(function (resolve, reject) {
+						self.PDFViewer_clearLastSearchHighlight();
+
+						if(resultID < 0 || resultID >= self.searchResults.length) {
+							reject(self.searchHighlightResultID);
+							return;
+						}
+
+						var result = self.searchResults[resultID];
+						if(result.pageID < 0 || result.pageID >= self.pages.length) {
+							reject(self.searchHighlightResultID);
+							return;
+						}
+
+						self.PDFPage_render(self.pages[result.pageID], self.scale).then(function (data) {
+							if(data.status === 3) {
+								return; // Page cancelled so no point in highlighting anything...
+							}
+
+							self.PDFPage_highlightItem(self.pages[result.pageID], result.itemID, result.matchPos, self.searchTerm);
+							self.searchHighlightResultID = resultID;
+
+							resolve(self.searchHighlightResultID);
+						}, function (data) {
+							reject(self.searchHighlightResultID);
+						});
+					});
+				};
+
 				$scope.onProgress = function (operation, state, value, total, message) {
 					if ($scope.progressCallback) {
 						$scope.$apply(function () {
@@ -575,37 +628,19 @@
 				};
 
 				$scope.highlightSearchResult = function (resultID) {
-					_ctrl.PDFViewer_clearSearchHighlight(this.searchResultId);
-
-					if(resultID < 0 || resultID >= _ctrl.searchResults.length) {
-						return;
-					}
-
-					var result = _ctrl.searchResults[resultID];
-					if(result.pageID < 0 || result.pageID >= _ctrl.pages.length) {
-						return;
-					}
-
 					var self = this;
 					this.searching = true;
-					_ctrl.PDFPage_render(_ctrl.pages[result.pageID], this.scale).then(function (data) {
-						self.searchResultId = resultID + 1;
+
+					_ctrl.PDFViewer_highlightSearchResult(resultID).then(function (highlightedResultID) {
+						self.searchResultId = highlightedResultID + 1;
 						self.searching = false;
-
-						if(data.status === 1) {
-							self.onProgress("render", "success", data.pageID, _ctrl.pages.length, "");
-						} else if(data.status === 3) {
-							return; // Page cancelled so no point in highlighting anything...
-						}
-
-						_ctrl.PDFPage_highlightItem(_ctrl.pages[result.pageID], result.itemID, result.matchPos, self.searchTerm);
-					}, function (data) {
-						self.onProgress("render", "failed", data.pageID, 0, data.message);
+					}, function (highlightedResultID) {
+						self.searchResultId = highlightedResultID + 1;
+						self.searching = false;
 					});
 				};
 
 				$scope.resetSearch = function () {
-					_ctrl.PDFViewer_clearSearchHighlight(this.searchResultId);
 					_ctrl.PDFViewer_resetSearch();
 					this.searchResultId = 0;
 					this.searchNumOccurences = 0;
@@ -620,14 +655,10 @@
 					this.resetSearch();
 
 					this.searchTerm = text;
-
-					var numOccurences = _ctrl.PDFViewer_search(text);
-
-					if(numOccurences > 0) {
+					this.searchNumOccurences = _ctrl.PDFViewer_search(text);
+					if(this.searchNumOccurences > 0) {
 						this.highlightSearchResult(0);
 					}
-
-					this.searchNumOccurences =  numOccurences;
 				};
 
 				$scope.renderAllVisiblePages = function (scrollDir) {
@@ -650,7 +681,7 @@
 							}
 
 							atLeastOnePageInViewport = true;
-							_ctrl.PDFPage_render(_ctrl.pages[iPage], this.scale).then(function (data) {
+							_ctrl.PDFPage_render(_ctrl.pages[iPage], _ctrl.scale).then(function (data) {
 								if(data.status === 1) {
 									self.onProgress("render", "success", data.pageID, _ctrl.pages.length, "");
 								}
@@ -667,7 +698,7 @@
 					if(scrollDir !== 0) {
 						var nextPageID = currentPageID + scrollDir;
 						if(nextPageID >= 0 && nextPageID < numPages) {
-							_ctrl.PDFPage_render(_ctrl.pages[nextPageID], this.scale).then(function (data) {
+							_ctrl.PDFPage_render(_ctrl.pages[nextPageID], _ctrl.scale).then(function (data) {
 								if(data.status === 1) {
 									self.onProgress("render", "success", data.pageID, _ctrl.pages.length, "");
 								}
@@ -681,16 +712,7 @@
 				};
 
 				$scope.onPDFScaleChanged = function (scale) {
-					this.scale = scale;
-
-					var numPages = _ctrl.pages.length;
-					for(var iPage = 0;iPage < numPages;++iPage) {
-						// Clear the page's contents...
-						_ctrl.PDFPage_clear(_ctrl.pages[iPage]);
-
-						// Resize to current scale...
-						_ctrl.PDFPage_resizeToScale(_ctrl.pages[iPage], scale);
-					}
+					_ctrl.PDFViewer_setScale(scale);
 
 					this.highlightSearchResult(this.searchResultId - 1);
 
@@ -891,7 +913,7 @@
 							viewer.onPDFScaleChanged(scale);
 						},
 						getZoomLevel: function () {
-							return viewer.scale;
+							return _ctrl.scale;
 						},
 						goToPage: function (pageIndex) {
 							if(viewer.pdf === null || pageIndex < 1 || pageIndex > viewer.pdf.numPages) {
