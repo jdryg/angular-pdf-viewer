@@ -116,13 +116,14 @@
 			},
 			controller: ['$scope', '$element', function ($scope, $element) {
 				var _ctrl = this;
+
+				_ctrl.pages = [];
+				_ctrl.searchResults = [];
 				
 				$scope.pdf = null;
-				$scope.pages = [];
 				$scope.scale = 1.0;
 				$scope.fitWidthScale = 1.0;
 				$scope.fitPageScale = 1.0;
-				$scope.searchResults = [];
 				$scope.searching = false;
 				$scope.lastScrollY = 0;
 				$scope.pagesRefMap = {};
@@ -180,7 +181,84 @@
 					};
 				};
 				
-				_ctrl.getAllPDFPages = function (pdf, hasTextLayer, callback) {
+				_ctrl.PDFPage_clear = function (page) {
+					if(page.renderTask !== null) {
+						page.renderTask.cancel();
+					}
+
+					page.rendered = false;
+					page.renderTask = null;
+					page.textLayer.empty();
+					page.container.empty();
+				};
+
+				_ctrl.PDFPage_resizeToScale = function (page, scale) {
+					var viewport = page.pdfPage.getViewport(scale);
+
+					page.container.css("width", viewport.width + "px");
+					page.container.css("height", viewport.height + "px");
+
+					page.canvas.attr("width", viewport.width);
+					page.canvas.attr("height", viewport.height);
+
+					page.textLayer.css("width", viewport.width + "px");
+					page.textLayer.css("height", viewport.height + "px");
+				};
+
+				_ctrl.PDFPage_isVisible = function (page) {
+					var pageContainer = page.container[0];
+					var parentContainer = page.container.parent()[0];
+
+					var pageTop = pageContainer.offsetTop - parentContainer.scrollTop;
+					var pageBottom = pageTop + pageContainer.offsetHeight;
+
+					return pageBottom >= 0 && pageTop <= parentContainer.offsetHeight;
+				};
+
+				_ctrl.PDFPage_highlightItem = function (page, itemID, matchPos, text) {
+					var textLayer = page.textLayer;
+					if(textLayer === null) {
+						return;
+					}
+
+					var textDivs = textLayer.children();
+					var item = textDivs[itemID];
+
+					var before = item.childNodes[0].nodeValue.substr(0, matchPos);
+					var middle = item.childNodes[0].nodeValue.substr(matchPos, text.length);
+					var after = document.createTextNode(item.childNodes[0].nodeValue.substr(matchPos + text.length));
+
+					var highlight_span = document.createElement("span");
+					highlight_span.className = "highlight";
+
+					highlight_span.appendChild(document.createTextNode(middle));
+
+					item.childNodes[0].nodeValue = before;
+					item.childNodes[0].parentNode.insertBefore(after, item.childNodes[0].nextSibling);
+					item.childNodes[0].parentNode.insertBefore(highlight_span, item.childNodes[0].nextSibling);
+
+					// Scroll to item...
+					var parentContainer = page.container.parent()[0];
+
+					var curScrollTop = parentContainer.scrollTop;
+					var containerHeight = parentContainer.offsetHeight;
+
+					highlight_span.scrollIntoView();
+
+					var newScrollTop = parentContainer.scrollTop;
+
+					var scrolledDown = newScrollTop > curScrollTop;
+					var newScrollPosInOldViewport = curScrollTop + containerHeight > newScrollTop;
+					var scrolledToEnd = newScrollTop >= parentContainer.scrollHeight - containerHeight;
+
+					if(scrolledDown && newScrollPosInOldViewport && !scrolledToEnd) {
+						parentContainer.scrollTop = curScrollTop;
+					} else {
+						parentContainer.scrollTop -= containerHeight / 4;
+					}
+				};
+				
+				_ctrl.PDFViewer_getAllPages = function (pdf, hasTextLayer, callback) {
 					var self = this,
 					    pageList = [],
 					    pagesRefMap = {},
@@ -223,6 +301,85 @@
 							});
 						}
 					}
+				};
+
+				_ctrl.PDFViewer_removeDistantPages = function (curPageID, distance) {
+					var numPages = this.pages.length;
+
+					var firstActivePageID = Math.max(curPageID - distance, 0);
+					var lastActivePageID = Math.min(curPageID + distance, numPages - 1);
+
+					for(var iPage = 0;iPage < firstActivePageID;++iPage) {
+						this.PDFPage_clear(this.pages[iPage]);
+					}
+
+					for(var iPage = lastActivePageID + 1;iPage < numPages;++iPage) {
+						this.PDFPage_clear(this.pages[iPage]);
+					}
+				};
+
+				_ctrl.PDFViewer_calcScale = function (desiredScale, containerSize) {
+					if(desiredScale === "fit_width") {
+						// Find the widest page in the document and fit it to the container.
+						var numPages = this.pages.length;
+						var maxWidth = this.pages[0].pdfPage.getViewport(1.0).width;
+						for(var iPage = 1;iPage < numPages;++iPage) {
+							maxWidth = Math.max(maxWidth, this.pages[iPage].pdfPage.getViewport(1.0).width);
+						}
+
+						return containerSize.width / maxWidth;
+					} else if(desiredScale === "fit_page") {
+						// Find the smaller dimension of the container and fit the 1st page to it.
+						var page0Viewport = this.pages[0].pdfPage.getViewport(1.0);
+
+						if(containerSize.height < containerSize.width) {
+							return containerSize.height / page0Viewport.height;
+						}
+
+						return containerSize.width / page0Viewport.width;
+					}
+
+					var scale = parseFloat(desiredScale);
+					if(isNaN(scale)) {
+						console.log("PDF viewer: " + desiredScale + " isn't a valid scale value.");
+						return 1.0;
+					}
+
+					return scale;
+				};
+
+				// TODO: resultID goes from 1 to searchResults.length. 
+				_ctrl.PDFViewer_clearSearchHighlight = function (resultID) {
+					if(resultID <= 0 || resultID > this.searchResults.length) {
+						return;
+					}
+
+					var result = this.searchResults[resultID - 1];
+					if(result === null) {
+						return;
+					}
+
+					var textLayer = this.pages[result.pageID].textLayer;
+					if(textLayer === null) {
+						return;
+					}
+
+					var textDivs = textLayer.children();
+					if(textDivs === null || textDivs.length === 0) {
+						return;
+					}
+
+					if(result.itemID < 0 || result.itemID >= textDivs.length) {
+						return;
+					}
+
+					var item = textDivs[result.itemID];
+					if(item.childNodes.length !== 3) {
+						return;
+					}
+
+					item.replaceChild(item.childNodes[1].firstChild, item.childNodes[1]);
+					item.normalize();
 				};
 
 				$scope.downloadProgress = function (progressData) {
@@ -294,103 +451,30 @@
 					return true;
 				};
 
-				$scope.clearPreviousHighlight = function () {
-					if(this.searchResultId <= 0 || this.searchResultId > this.searchResults.length) {
-						return;
-					}
-
-					var result = this.searchResults[this.searchResultId - 1];
-					if(result === null) {
-						return;
-					}
-
-					var textLayer = this.pages[result.pageID].textLayer;
-					if(textLayer === null) {
-						return;
-					}
-
-					var textDivs = textLayer.children();
-					if(textDivs === null || textDivs.length === 0) {
-						return;
-					}
-
-					if(result.itemID < 0 || result.itemID >= textDivs.length) {
-						return;
-					}
-
-					var item = textDivs[result.itemID];
-					if(item.childNodes.length !== 3) {
-						return;
-					}
-
-					item.replaceChild(item.childNodes[1].firstChild, item.childNodes[1]);
-					item.normalize();
-				};
-
-				$scope.highlightItemInPage = function (pageID, itemID, matchPos, text) {
-					var textLayer = this.pages[pageID].textLayer;
-					if(textLayer === null) {
-						return;
-					}
-
-					var textDivs = textLayer.children();
-					var item = textDivs[itemID];
-
-					var before = item.childNodes[0].nodeValue.substr(0, matchPos);
-					var middle = item.childNodes[0].nodeValue.substr(matchPos, text.length);
-					var after = document.createTextNode(item.childNodes[0].nodeValue.substr(matchPos + text.length));
-
-					var highlight_span = document.createElement("span");
-					highlight_span.className = "highlight";
-
-					highlight_span.appendChild(document.createTextNode(middle));
-
-					item.childNodes[0].nodeValue = before;
-					item.childNodes[0].parentNode.insertBefore(after, item.childNodes[0].nextSibling);
-					item.childNodes[0].parentNode.insertBefore(highlight_span, item.childNodes[0].nextSibling);
-
-					var curScrollTop = $element[0].scrollTop;
-					var containerHeight = $element[0].offsetHeight;
-
-					highlight_span.scrollIntoView();
-
-					var newScrollTop = $element[0].scrollTop;
-
-					var scrolledDown = newScrollTop > curScrollTop;
-					var newScrollPosInOldViewport = curScrollTop + containerHeight > newScrollTop;
-					var scrolledToEnd = newScrollTop >= $element[0].scrollHeight - containerHeight;
-
-					if(scrolledDown && newScrollPosInOldViewport && !scrolledToEnd) {
-						$element[0].scrollTop = curScrollTop;
-					} else {
-						$element[0].scrollTop -= containerHeight / 4;
-					}
-				};
-
 				$scope.highlightSearchResult = function (resultID) {
-					this.clearPreviousHighlight();
+					_ctrl.PDFViewer_clearSearchHighlight(this.searchResultId);
 
-					if(resultID < 0 || resultID >= this.searchResults.length) {
+					if(resultID < 0 || resultID >= _ctrl.searchResults.length) {
 						return;
 					}
 
-					var result = this.searchResults[resultID];
-					if(result.pageID < 0 || result.pageID >= this.pages.length) {
+					var result = _ctrl.searchResults[resultID];
+					if(result.pageID < 0 || result.pageID >= _ctrl.pages.length) {
 						return;
 					}
 
 					var self = this;
 					this.searching = true;
 					this.renderPDFPage(result.pageID, this.scale, function () {
-						self.highlightItemInPage(result.pageID, result.itemID, result.matchPos, self.searchTerm);
+						_ctrl.PDFPage_highlightItem(_ctrl.pages[result.pageID], result.itemID, result.matchPos, self.searchTerm);
 						self.searchResultId = resultID + 1;
 						self.searching = false;
 					});
 				};
 
 				$scope.resetSearch = function () {
-					this.clearPreviousHighlight();
-					this.searchResults = [];
+					_ctrl.PDFViewer_clearSearchHighlight(this.searchResultId);
+					_ctrl.searchResults = [];
 					this.searchResultId = 0;
 					this.searchNumOccurences = 0;
 					this.searchTerm = "";
@@ -411,9 +495,9 @@
 
 					var regex = new RegExp(text, "i");
 
-					var numPages = this.pages.length;
+					var numPages = _ctrl.pages.length;
 					for(var iPage = 0;iPage < numPages;++iPage) {
-						var pageTextContent = this.pages[iPage].textContent;
+						var pageTextContent = _ctrl.pages[iPage].textContent;
 						if(pageTextContent === null) {
 							continue;
 						}
@@ -432,7 +516,7 @@
 							var matchPos = itemStr.search(regex);
 							var itemStrStartIndex = 0;
 							while(matchPos > -1) {
-								this.searchResults.push({
+								_ctrl.searchResults.push({
 									pageID: iPage,
 									itemID: iItem - numItemsSkipped,
 									matchPos: itemStrStartIndex + matchPos
@@ -446,65 +530,16 @@
 						}
 					}
 
-					if(this.searchResults.length > 0) {
+					if(_ctrl.searchResults.length > 0) {
 						this.highlightSearchResult(0);
 					}
 
-					this.searchNumOccurences =  this.searchResults.length;
-				};
-
-				$scope.resizePDFPageToScale = function (page, scale) {
-					var viewport = page.pdfPage.getViewport(scale);
-
-					page.container.css("width", viewport.width + "px");
-					page.container.css("height", viewport.height + "px");
-
-					page.canvas.attr("width", viewport.width);
-					page.canvas.attr("height", viewport.height);
-
-					page.textLayer.css("width", viewport.width + "px");
-					page.textLayer.css("height", viewport.height + "px");
-				};
-
-				$scope.calcPDFScale = function (pageList, desiredScale, containerWidth, containerHeight) {
-					if(desiredScale === "fit_width") {
-						// Find the widest page in the document and fit it to the container.
-						var numPages = pageList.length;
-						var maxWidth = pageList[0].pdfPage.getViewport(1.0).width;
-						for(var iPage = 1;iPage < numPages;++iPage) {
-							maxWidth = Math.max(maxWidth, this.pages[iPage].pdfPage.getViewport(1.0).width);
-						}
-
-						return containerWidth / maxWidth;
-					} else if(desiredScale === "fit_page") {
-						// Find the smaller dimension of the container and fit the 1st page to it.
-						var page0Viewport = pageList[0].pdfPage.getViewport(1.0);
-
-						if(containerHeight < containerWidth) {
-							return containerHeight / page0Viewport.height;
-						}
-
-						return containerWidth / page0Viewport.width;
-					}
-
-					var scale = parseFloat(desiredScale);
-					if(isNaN(scale)) {
-						console.warn("PDF viewer: " + desiredScale + " isn't a valid scale value.");
-						return 1.0;
-					}
-
-					return scale;
-				};
-
-				$scope.isPageInViewport = function (pageContainer) {
-					var pageTop = pageContainer[0].offsetTop - $element[0].scrollTop;
-					var pageBottom = pageTop + pageContainer[0].offsetHeight;
-					return pageBottom >= 0 && pageTop <= $element[0].offsetHeight;
+					this.searchNumOccurences =  _ctrl.searchResults.length;
 				};
 
 				$scope.renderPDFPage = function (pageID, scale, callback) {
 					var self = this;
-					var page = this.pages[pageID];
+					var page = _ctrl.pages[pageID];
 
 					if(page.rendered) {
 						if(page.renderTask === null) {
@@ -573,7 +608,7 @@
 									operation: "render",
 									state: "success",
 									value: pageID + 1, 
-									total: self.pages.length,
+									total: _ctrl.pages.length,
 									message: ""
 								});
 							});
@@ -594,7 +629,7 @@
 									operation: "render",
 									state: "failed",
 									value: pageID + 1, 
-									total: self.pages.length,
+									total: _ctrl.pages.length,
 									message: "PDF.js: " + message
 								});
 							});
@@ -602,52 +637,17 @@
 					});
 				};
 
-				$scope.clearPage = function (pageID) {
-					var page = this.pages[pageID];
-					if(page.rendered) {
-						// Clear the page...
-						page.rendered = false;
-						page.renderTask = null;
-						page.container.empty();
-						page.textLayer.empty();
-					} else {
-						if(page.renderTask !== null) {
-							page.renderTask.cancel();
-
-							page.rendered = false;
-							page.renderTask = null;
-							page.container.empty();
-							page.textLayer.empty();
-						}
-					}
-				};
-
-				$scope.removeUnusedPages = function (curPageID) {
-					// Keep 5 pages before the current and 5 pages after the current. Remove the rest...
-					var numPages = this.pages.length;
-					var firstActivePageID = Math.max(curPageID - 5, 0);
-					var lastActivePageID = Math.min(curPageID + 5, numPages - 1);
-
-					for(var iPage = 0;iPage < firstActivePageID;++iPage) {
-						this.clearPage(iPage);
-					}
-
-					for(var iPage = lastActivePageID + 1;iPage < numPages;++iPage) {
-						this.clearPage(iPage);
-					}
-				};
-
 				$scope.renderAllVisiblePages = function (scrollDir) {
 					// Since pages are placed one after the other, we can stop the loop once
 					// we find a page outside the viewport, iff we've already found one *inside* 
 					// the viewport. It helps with large PDFs.
-					var numPages = this.pages.length;
+					var numPages = _ctrl.pages.length;
 					var atLeastOnePageInViewport = false;
 					var currentPageID = 0;
 					for(var iPage = 0;iPage < numPages;++iPage) {
-						var page = this.pages[iPage];
+						var page = _ctrl.pages[iPage];
 
-						var inViewport = this.isPageInViewport(page.container);
+						var inViewport = _ctrl.PDFPage_isVisible(page);
 						if(inViewport) {
 							var pageTop = page.container[0].offsetTop - $element[0].scrollTop;
 							if(pageTop <= $element[0].offsetHeight / 2) {
@@ -676,13 +676,13 @@
 				$scope.onPDFScaleChanged = function (scale) {
 					this.scale = scale;
 
-					var numPages = this.pages.length;
+					var numPages = _ctrl.pages.length;
 					for(var iPage = 0;iPage < numPages;++iPage) {
 						// Clear the page's contents...
-						this.clearPage(iPage);
+						_ctrl.PDFPage_clear(_ctrl.pages[iPage]);
 
 						// Resize to current scale...
-						this.resizePDFPageToScale(this.pages[iPage], scale);
+						_ctrl.PDFPage_resizeToScale(_ctrl.pages[iPage], scale);
 					}
 
 					this.highlightSearchResult(this.searchResultId - 1);
@@ -692,10 +692,10 @@
 
 				$scope.onContainerSizeChanged = function (containerSize) {
 					// Calculate fit_width and fit_page scales.
-					this.fitWidthScale = this.calcPDFScale(this.pages, "fit_width", containerSize.width, containerSize.height);
-					this.fitPageScale = this.calcPDFScale(this.pages, "fit_page", containerSize.width, containerSize.height);
+					this.fitWidthScale = _ctrl.PDFViewer_calcScale("fit_width", containerSize);
+					this.fitPageScale = _ctrl.PDFViewer_calcScale("fit_page", containerSize);
 
-					var scale = this.calcPDFScale(this.pages, this.initialScale, containerSize.width, containerSize.height);
+					var scale = _ctrl.PDFViewer_calcScale(this.initialScale, containerSize);
 					this.onPDFScaleChanged(scale);
 				};
 
@@ -705,7 +705,7 @@
 
 					// Since the PDF has changed we must clear the $element.
 					this.resetSearch();
-					this.pages = [];
+					_ctrl.pages = [];
 					this.lastScrollY = 0;
 					this.pdfLinkService = null;
 					this.pagesRefMap = {};
@@ -717,14 +717,14 @@
 						self.pdf = pdf;
 
 						// Get all the pages...
-						_ctrl.getAllPDFPages(pdf, self.shouldRenderTextLayer(), function (pageList, pagesRefMap) {
-							self.pages = pageList;
+						_ctrl.PDFViewer_getAllPages(pdf, self.shouldRenderTextLayer(), function (pageList, pagesRefMap) {
+							_ctrl.pages = pageList;
 							self.pagesRefMap = pagesRefMap;
 							self.pdfLinkService = new PDFLinkService(self);
 
 							// Append all page containers to the $element...
 							for(var iPage = 0;iPage < pageList.length; ++iPage) {
-								$element.append(self.pages[iPage].container);
+								$element.append(_ctrl.pages[iPage].container);
 							}
 
 							var containerSize = _ctrl.getElementInnerSize($element, pageMargin);
@@ -752,7 +752,7 @@
 
 					// Since the PDF has changed we must clear the $element.
 					this.resetSearch();
-					this.pages = [];
+					_ctrl.pages = [];
 					this.lastScrollY = 0;
 					this.pdfLinkService = null;
 					this.pagesRefMap = {};
@@ -769,14 +769,14 @@
 							self.pdf = pdf;
 
 							// Get all the pages...
-							_ctrl.getAllPDFPages(pdf, self.shouldRenderTextLayer(), function (pageList, pagesRefMap) {
-								self.pages = pageList;
+							_ctrl.PDFViewer_getAllPages(pdf, self.shouldRenderTextLayer(), function (pageList, pagesRefMap) {
+								_ctrl.pages = pageList;
 								self.pagesRefMap = pagesRefMap;
 								self.pdfLinkService = new PDFLinkService(self);
 
 								// Append all page containers to the $element...
 								for(var iPage = 0;iPage < pageList.length; ++iPage) {
-									$element.append(self.pages[iPage].container);
+									$element.append(_ctrl.pages[iPage].container);
 								}
 
 								var containerSize = _ctrl.getElementInnerSize($element, pageMargin);
@@ -846,7 +846,7 @@
 					$scope.lastScrollY = $element[0].scrollTop;
 
 					var curPageID = $scope.renderAllVisiblePages(scrollDir > 0 ? 1 : (scrollDir < 0 ? -1 : 0));
-					$scope.removeUnusedPages(curPageID);
+					_ctrl.PDFViewer_removeDistantPages(curPageID, 5);
 					$scope.$apply(function () {
 						$scope.currentPage = curPageID;
 					});
@@ -914,9 +914,9 @@
 						zoomTo: function (scale) {
 							if(isNaN(parseFloat(scale))) {
 								// scale isn't a valid floating point number. Let
-								// calcPDFScale() handle it (e.g. fit_width or fit_page).
+								// PDFViewer_calcScale() handle it (e.g. fit_width or fit_page).
 								var containerSize = _ctrl.getElementInnerSize($element, pageMargin);
-								scale = viewer.calcPDFScale(viewer.pages, scale, containerSize.width, containerSize.height);
+								scale = _ctrl.PDFViewer_calcScale(scale, containerSize);
 							}
 
 							viewer.onPDFScaleChanged(scale);
@@ -929,7 +929,7 @@
 								return;
 							}
 
-							viewer.pages[pageIndex - 1].container[0].scrollIntoView();
+							_ctrl.pages[pageIndex - 1].container[0].scrollIntoView();
 						},
 						goToNextPage: function () {
 							if(viewer.pdf === null) {
@@ -958,7 +958,7 @@
 							}
 
 							var nextHighlightID = viewer.searchResultId + 1;
-							if(nextHighlightID > viewer.searchResults.length) {
+							if(nextHighlightID > _ctrl.searchResults.length) {
 								nextHighlightID = 1;
 							}
 
@@ -971,7 +971,7 @@
 
 							var prevHighlightID = viewer.searchResultId - 1;
 							if(prevHighlightID <= 0) {
-								prevHighlightID = viewer.searchResults.length;
+								prevHighlightID = _ctrl.searchResults.length;
 							}
 
 							viewer.highlightSearchResult(prevHighlightID - 1);
