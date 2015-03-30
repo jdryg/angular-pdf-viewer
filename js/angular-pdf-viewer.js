@@ -1,5 +1,5 @@
 /*
- * angular-pdf-viewer v1.2.0
+ * angular-pdf-viewer v1.2.1
  * https://github.com/jdryg/angular-pdf-viewer
  */
 (function (angular, PDFJS, document) {
@@ -115,6 +115,8 @@
 				currentPage: "="
 			},
 			controller: ['$scope', '$element', function ($scope, $element) {
+				var _ctrl = this;
+				
 				$scope.pdf = null;
 				$scope.pages = [];
 				$scope.scale = 1.0;
@@ -126,38 +128,101 @@
 				$scope.pagesRefMap = {};
 				$scope.pdfLinkService = null;
 
-				$scope.getContainerSize = function () {
-					// Create a tall temp element, add it to the $element
-					// and calculate its width. This way we can take into account 
-					// the scrollbar width.
-					// NOTE: Even if the PDF can fit in a single screen (e.g. 1 
-					// page at really small scale level), assuming there will be
-					// a scrollbar, doesn't hurt. The page div will be so small 
-					// that the difference between left and right margins will not
-					// be distinguisable.
+				/**
+				 * Returns the inner size of the element taking into account the vertical scrollbar that will
+				 * appear if the element gets really tall. 
+				 * 
+				 * @argument {element} element The element we are calculating its inner size
+				 * @argument {integer} margin Margin around the element (subtracted from the element's size)
+				 */ 
+				_ctrl.getElementInnerSize = function (element, margin) {
 					var tallTempElement = angular.element("<div></div>");
 					tallTempElement.css("height", "10000px");
-					$element.append(tallTempElement);
+					element.append(tallTempElement);
 
 					var w = tallTempElement[0].offsetWidth;
 
 					tallTempElement.remove();
 
-					var h = $element[0].offsetHeight;
+					var h = element[0].offsetHeight;
 					if(h === 0) {
 						// TODO: Should we get the parent height?
-						h = 2 * pageMargin;
+						h = 2 * margin;
 					}
 
-					// HACK: Allow some space around page.
-					// Q: Should this be configurable by the client?
-					w -= 2 * pageMargin;
-					h -= 2 * pageMargin;
+					w -= 2 * margin;
+					h -= 2 * margin;
 
 					return {
 						width: w,
 						height: h
 					};
+				};
+
+				_ctrl.PDFPage_create = function (pdfPage, textContent) {
+					var pageContainer = angular.element("<div></div>");
+					pageContainer.addClass("page");
+					pageContainer.attr("id", "page_" + pdfPage.pageIndex);
+
+					var canvasElement = angular.element("<canvas></canvas>");
+					var textLayerElement = angular.element("<div></div>");
+					textLayerElement.addClass("text-layer");
+
+					return {
+						id: pdfPage.pageIndex + 1,
+						pdfPage: pdfPage,
+						textContent: textContent,
+						container: pageContainer,
+						canvas: canvasElement,
+						textLayer: textLayerElement,
+						rendered: false,
+						renderTask: null
+					};
+				};
+				
+				_ctrl.getAllPDFPages = function (pdf, hasTextLayer, callback) {
+					var self = this,
+					    pageList = [],
+					    pagesRefMap = {},
+					    numPages = pdf.numPages,
+					    remainingPages = numPages;
+
+					if(hasTextLayer) {
+						for(var iPage = 0;iPage < numPages;++iPage) {
+							pageList.push({});
+
+							var getPageTask = pdf.getPage(iPage + 1);
+							getPageTask.then(function (page) {
+								// Page reference map. Required by the annotation layer.
+								var refStr = page.ref.num + ' ' + page.ref.gen + ' R';
+								pagesRefMap[refStr] = page.pageIndex + 1;
+
+								var textContentTask = page.getTextContent();
+								textContentTask.then(function (textContent) {
+									pageList[page.pageIndex] = self.PDFPage_create(page, textContent);
+
+									--remainingPages;
+									if(remainingPages === 0) {
+										callback(pageList, pagesRefMap);
+									}
+								});
+							});
+						}
+					} else {
+						for(var iPage = 0;iPage < numPages;++iPage) {
+							pageList.push({});
+
+							var getPageTask = pdf.getPage(iPage + 1);
+							getPageTask.then(function (page) {
+								pageList[page.pageIndex] = self.PDFPage_create(page, null);
+
+								--remainingPages;
+								if(remainingPages === 0) {
+									callback(pageList, pagesRefMap);
+								}
+							});
+						}
+					}
 				};
 
 				$scope.downloadProgress = function (progressData) {
@@ -221,77 +286,12 @@
 					}
 				};
 
-				$scope.createPage = function (page, textContent) {
-					var pageContainer = angular.element("<div></div>");
-					pageContainer.addClass("page");
-					pageContainer.attr("id", "page_" + page.pageIndex);
-
-					var canvasElement = angular.element("<canvas></canvas>");
-					var textLayerElement = angular.element("<div></div>");
-					textLayerElement.addClass("text-layer");
-
-					return {
-						id: page.pageIndex + 1,
-						pdfPage: page,
-						textContent: textContent,
-						container: pageContainer,
-						canvas: canvasElement,
-						textLayer: textLayerElement,
-						rendered: false,
-						renderTask: null
-					};
-				};
-
 				$scope.shouldRenderTextLayer = function () {
 					if(this.renderTextLayer === "" || this.renderTextLayer === undefined || this.renderTextLayer === null || this.renderTextLayer.toLowerCase() === "false") {
 						return false;
 					}
 
 					return true;
-				};
-
-				$scope.getAllPDFPages = function (pdf, callback) {
-					var pageList = [];
-					var self = this;
-
-					var remainingPages = pdf.numPages;
-					if(this.shouldRenderTextLayer()) {
-						for(var iPage = 0;iPage < pdf.numPages;++iPage) {
-							pageList.push({});
-
-							var getPageTask = pdf.getPage(iPage + 1);
-							getPageTask.then(function (page) {
-								// Page reference map. Required by the annotation layer.
-								var refStr = page.ref.num + ' ' + page.ref.gen + ' R';
-								self.pagesRefMap[refStr] = page.pageIndex + 1;
-
-								var textContentTask = page.getTextContent();
-								textContentTask.then(function (textContent) {
-									pageList[page.pageIndex] = self.createPage(page, textContent);
-
-									--remainingPages;
-									if(remainingPages === 0) {
-										self.pdfLinkService = new PDFLinkService(self);
-										callback(pageList);
-									}
-								});
-							});
-						}
-					} else {
-						for(var iPage = 0;iPage < pdf.numPages;++iPage) {
-							pageList.push({});
-
-							var getPageTask = pdf.getPage(iPage + 1);
-							getPageTask.then(function (page) {
-								pageList[page.pageIndex] = self.createPage(page, null);
-
-								--remainingPages;
-								if(remainingPages === 0) {
-									callback(pageList);
-								}
-							});
-						}
-					}
 				};
 
 				$scope.clearPreviousHighlight = function () {
@@ -717,15 +717,17 @@
 						self.pdf = pdf;
 
 						// Get all the pages...
-						self.getAllPDFPages(pdf, function (pageList) {
+						_ctrl.getAllPDFPages(pdf, self.shouldRenderTextLayer(), function (pageList, pagesRefMap) {
 							self.pages = pageList;
+							self.pagesRefMap = pagesRefMap;
+							self.pdfLinkService = new PDFLinkService(self);
 
 							// Append all page containers to the $element...
 							for(var iPage = 0;iPage < pageList.length; ++iPage) {
 								$element.append(self.pages[iPage].container);
 							}
 
-							var containerSize = self.getContainerSize();
+							var containerSize = _ctrl.getElementInnerSize($element, pageMargin);
 							self.onContainerSizeChanged(containerSize);
 						});
 					}, function (message) {
@@ -767,15 +769,17 @@
 							self.pdf = pdf;
 
 							// Get all the pages...
-							self.getAllPDFPages(pdf, function (pageList) {
+							_ctrl.getAllPDFPages(pdf, self.shouldRenderTextLayer(), function (pageList, pagesRefMap) {
 								self.pages = pageList;
+								self.pagesRefMap = pagesRefMap;
+								self.pdfLinkService = new PDFLinkService(self);
 
 								// Append all page containers to the $element...
 								for(var iPage = 0;iPage < pageList.length; ++iPage) {
 									$element.append(self.pages[iPage].container);
 								}
 
-								var containerSize = self.getContainerSize();
+								var containerSize = _ctrl.getElementInnerSize($element, pageMargin);
 								self.onContainerSizeChanged(containerSize);
 							});
 						}, function (message) {
@@ -911,7 +915,7 @@
 							if(isNaN(parseFloat(scale))) {
 								// scale isn't a valid floating point number. Let
 								// calcPDFScale() handle it (e.g. fit_width or fit_page).
-								var containerSize = viewer.getContainerSize();
+								var containerSize = _ctrl.getElementInnerSize($element, pageMargin);
 								scale = viewer.calcPDFScale(viewer.pages, scale, containerSize.width, containerSize.height);
 							}
 
