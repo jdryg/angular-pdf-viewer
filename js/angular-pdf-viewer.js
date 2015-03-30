@@ -5,6 +5,41 @@
 (function (angular, PDFJS, document) {
 	"use strict";
 
+	/**
+	 * Returns the inner size of the element taking into account the vertical scrollbar that will
+	 * appear if the element gets really tall. 
+	 * 
+	 * @argument {element} element The element we are calculating its inner size
+	 * @argument {integer} margin Margin around the element (subtracted from the element's size)
+	 */ 
+	function getElementInnerSize(element, margin) {
+		var tallTempElement = angular.element("<div></div>");
+		tallTempElement.css("height", "10000px");
+		element.append(tallTempElement);
+
+		var w = tallTempElement[0].offsetWidth;
+
+		tallTempElement.remove();
+
+		var h = element[0].offsetHeight;
+		if(h === 0) {
+			// TODO: Should we get the parent height?
+			h = 2 * margin;
+		}
+
+		w -= 2 * margin;
+		h -= 2 * margin;
+
+		return {
+			width: w,
+			height: h
+		};
+	}
+
+	function trim1 (str) {
+		return str.replace(/^\s\s*/, '').replace(/\s\s*$/, '');
+	}
+
 	/*
 	 * PDF.js link service implementation for the annotation layer.
 	 * 
@@ -258,6 +293,431 @@
 		}
 	};
 
+	function PDFViewer() {
+		this.pdf = null;
+		this.pages = [];
+		this.scale = 1.0;
+		this.pdfLinkService = null;
+		this.pagesRefMap = {};
+		this.searchResults = [];
+		this.searchTerm = "";
+		this.searchHighlightResultID = -1;
+		this.fitWidthScale = 1.0;
+		this.fitPageScale = 1.0;
+		this.searching = false;
+		this.lastScrollY = 0;
+
+		// TODO: Rename those...
+		this.PDFViewer_onSearch = null;
+		this.PDFViewer_onPageRendered = null;
+		this.PDFViewer_onDataDownloaded = null;
+		this.PDFViewer_onCurrentPageChanged = null;
+		this.PDFViewer_passwordCallback = null;
+	}
+
+	PDFViewer.prototype = {
+		setUrl: function (url, element, initialScale, renderTextLayer, pageMargin, api) {
+			this.resetSearch();
+			this.pages = [];
+			this.lastScrollY = 0;
+			this.pdfLinkService = null;
+			this.pagesRefMap = {};
+			
+			var self = this;
+			var getDocumentTask = PDFJS.getDocument(url, null, angular.bind(this, this.PDFViewer_passwordCallback), angular.bind(this, this.downloadProgress));
+			getDocumentTask.then(function (pdf) {
+				self.pdf = pdf;
+
+				// Get all the pages...
+				self.getAllPages(pdf, renderTextLayer, function (pageList, pagesRefMap) {
+					self.pages = pageList;
+					self.pagesRefMap = pagesRefMap;
+					self.pdfLinkService = new PDFLinkService(pagesRefMap, api);
+
+					// Append all page containers to the $element...
+					for(var iPage = 0;iPage < pageList.length; ++iPage) {
+						element.append(pageList[iPage].container);
+					}
+
+					var containerSize = getElementInnerSize(element, pageMargin);
+					self.setContainerSize(initialScale, containerSize);
+				});
+			}, function (message) {
+				self.PDFViewer_onDataDownloaded("failed", 0, 0, "PDF.js: " + message);
+			});
+		},
+		setFile: function (file, element, initialScale, renderTextLayer, pageMargin, api) {
+			this.resetSearch();
+			this.pages = [];
+			this.lastScrollY = 0;
+			this.pdfLinkService = null;
+			this.pagesRefMap = {};
+
+			var self = this;
+			var reader = new FileReader();
+			reader.onload = function(e) {
+				var arrayBuffer = e.target.result;
+				var uint8Array = new Uint8Array(arrayBuffer);
+
+				var getDocumentTask = PDFJS.getDocument(uint8Array, null, angular.bind(self, self.PDFViewer_passwordCallback), angular.bind(self, self.downloadProgress));
+				getDocumentTask.then(function (pdf) {
+					self.pdf = pdf;
+
+					// Get all the pages...
+					self.getAllPages(pdf, renderTextLayer, function (pageList, pagesRefMap) {
+						self.pages = pageList;
+						self.pagesRefMap = pagesRefMap;
+						self.pdfLinkService = new PDFLinkService(pagesRefMap, api);
+
+						// Append all page containers to the $element...
+						for(var iPage = 0;iPage < pageList.length; ++iPage) {
+							element.append(pageList[iPage].container);
+						}
+
+						var containerSize = getElementInnerSize(element, pageMargin);
+						self.setContainerSize(initialScale, containerSize);
+					});
+				}, function (message) {
+					self.PDFViewer_onDataDownloaded("failed", 0, 0, "PDF.js: " + message);
+				});
+			};
+
+			reader.onprogress = function (e) {
+				self.downloadProgress(e);
+			};
+
+			reader.onloadend = function (e) {
+				var error = e.target.error;
+				if(error !== null) {
+					var message = "File API error: ";
+					switch(e.code) {
+						case error.ENCODING_ERR:
+							message += "Encoding error.";
+							break;
+						case error.NOT_FOUND_ERR:
+							message += "File not found.";
+							break;
+						case error.NOT_READABLE_ERR:
+							message += "File could not be read.";
+							break;
+						case error.SECURITY_ERR:
+							message += "Security issue with file.";
+							break;
+						default:
+							message += "Unknown error.";
+							break;
+					}
+
+					self.PDFViewer_onDataDownloaded("failed", 0, 0, message);
+				}
+			};
+
+			reader.readAsArrayBuffer(file);
+		},
+		getAllPages: function (pdf, hasTextLayer, callback) {
+			var pageList = [],
+			    pagesRefMap = {},
+				numPages = pdf.numPages,
+				remainingPages = numPages;
+
+			if(hasTextLayer) {
+				for(var iPage = 0;iPage < numPages;++iPage) {
+					pageList.push({});
+
+					var getPageTask = pdf.getPage(iPage + 1);
+					getPageTask.then(function (page) {
+						// Page reference map. Required by the annotation layer.
+						var refStr = page.ref.num + ' ' + page.ref.gen + ' R';
+						pagesRefMap[refStr] = page.pageIndex + 1;
+
+						var textContentTask = page.getTextContent();
+						textContentTask.then(function (textContent) {
+							pageList[page.pageIndex] = new PDFPage(page, textContent);
+
+							--remainingPages;
+							if(remainingPages === 0) {
+								callback(pageList, pagesRefMap);
+							}
+						});
+					});
+				}
+			} else {
+				for(var iPage = 0;iPage < numPages;++iPage) {
+					pageList.push({});
+
+					var getPageTask = pdf.getPage(iPage + 1);
+					getPageTask.then(function (page) {
+						pageList[page.pageIndex] = new PDFPage(page, null);
+
+						--remainingPages;
+						if(remainingPages === 0) {
+							callback(pageList, pagesRefMap);
+						}
+					});
+				}
+			}
+		},
+		setContainerSize: function (initialScale, containerSize) {
+			this.fitWidthScale = this.calcScale("fit_width", containerSize);
+			this.fitPageScale = this.calcScale("fit_page", containerSize);
+
+			this.setScale(this.calcScale(initialScale, containerSize));
+		},
+		setScale: function (scale) {
+			this.scale = scale;
+
+			var numPages = this.pages.length;
+			for(var iPage = 0;iPage < numPages;++iPage) {
+				// Clear the page's contents...
+				this.pages[iPage].clear();
+
+				// Resize to current scale...
+				this.pages[iPage].resize(scale);
+			}
+
+			this.highlightSearchResult(this.searchHighlightResultID);
+			this.renderAllVisiblePages(0);
+		},
+		calcScale: function (desiredScale, containerSize) {
+			if(desiredScale === "fit_width") {
+				// Find the widest page in the document and fit it to the container.
+				var numPages = this.pages.length;
+				var maxWidth = this.pages[0].pdfPage.getViewport(1.0).width;
+				for(var iPage = 1;iPage < numPages;++iPage) {
+					maxWidth = Math.max(maxWidth, this.pages[iPage].pdfPage.getViewport(1.0).width);
+				}
+
+				return containerSize.width / maxWidth;
+			} else if(desiredScale === "fit_page") {
+				// Find the smaller dimension of the container and fit the 1st page to it.
+				var page0Viewport = this.pages[0].pdfPage.getViewport(1.0);
+
+				if(containerSize.height < containerSize.width) {
+					return containerSize.height / page0Viewport.height;
+				}
+
+				return containerSize.width / page0Viewport.width;
+			}
+
+			var scale = parseFloat(desiredScale);
+			if(isNaN(scale)) {
+				console.log("PDF viewer: " + desiredScale + " isn't a valid scale value.");
+				return 1.0;
+			}
+
+			return scale;
+		},
+		removeDistantPages: function (curPageID, distance) {
+			var numPages = this.pages.length;
+
+			var firstActivePageID = Math.max(curPageID - distance, 0);
+			var lastActivePageID = Math.min(curPageID + distance, numPages - 1);
+
+			for(var iPage = 0;iPage < firstActivePageID;++iPage) {
+				this.pages[iPage].clear();
+			}
+
+			for(var iPage = lastActivePageID + 1;iPage < numPages;++iPage) {
+				this.pages[iPage].clear();
+			}
+		},
+		renderAllVisiblePages: function (scrollDir) {
+			var self = this;
+			var numPages = this.pages.length;
+			var currentPageID = 0;
+
+			var atLeastOnePageInViewport = false;
+			for(var iPage = 0;iPage < numPages;++iPage) {
+				var page = this.pages[iPage];
+
+				if(page.isVisible()) {
+					var parentContainer = page.container.parent()[0];
+					var pageTop = page.container[0].offsetTop - parentContainer.scrollTop;
+					if(pageTop <= parentContainer.offsetHeight / 2) {
+						currentPageID = iPage;
+					}
+
+					atLeastOnePageInViewport = true;
+					page.render(this.scale, this.pdfLinkService, function (page, status) {
+						if(status === PDF_PAGE_RENDERED) {
+							self.PDFViewer_onPageRendered("success", page.id, self.pdf.numPages, "");
+						} else if (status === PDF_PAGE_RENDER_FAILED) {
+							self.PDFViewer_onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
+						}
+					});
+				} else {
+					if(atLeastOnePageInViewport) {
+						break;
+					}
+				}
+			}
+
+			if(scrollDir !== 0) {
+				var nextPageID = currentPageID + scrollDir;
+				if(nextPageID >= 0 && nextPageID < numPages) {
+					this.pages[nextPageID].render(this.scale, this.pdfLinkService, function (page, status) {
+						if(status === PDF_PAGE_RENDERED) {
+							self.PDFViewer_onPageRendered("success", page.id, self.pdf.numPages, "");
+						} else if (status === PDF_PAGE_RENDER_FAILED) {
+							self.PDFViewer_onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
+						}
+					});
+				}
+			}
+
+			this.removeDistantPages(currentPageID, 5);
+
+			this.PDFViewer_onCurrentPageChanged(currentPageID + 1);
+		},
+		resetSearch: function () {
+			this.clearLastSearchHighlight();
+		
+			this.searchResults = [];
+			this.searchTerm = "";
+			this.searchHighlightResultID = -1;
+
+			this.PDFViewer_onSearch("reset", 0, 0, "");
+		},
+		search: function (text) {
+			this.resetSearch();
+			this.searchTerm = text;
+
+			var regex = new RegExp(text, "i");
+
+			var numPages = this.pages.length;
+			for(var iPage = 0;iPage < numPages;++iPage) {
+				var pageTextContent = this.pages[iPage].textContent;
+				if(pageTextContent === null) {
+					continue;
+				}
+
+				var numItems = pageTextContent.items.length;
+				var numItemsSkipped = 0;
+				for(var iItem = 0;iItem < numItems;++iItem) {
+					// Find all occurrences of text in item string.
+					var itemStr = pageTextContent.items[iItem].str;
+					itemStr = trim1(itemStr);
+					if(itemStr.length === 0) {
+						numItemsSkipped++;
+						continue;
+					}
+
+					var matchPos = itemStr.search(regex);
+					var itemStrStartIndex = 0;
+					while(matchPos > -1) {
+						this.searchResults.push({
+							pageID: iPage,
+							itemID: iItem - numItemsSkipped,
+							matchPos: itemStrStartIndex + matchPos
+						});
+
+						itemStr = itemStr.substr(matchPos + text.length);
+						itemStrStartIndex += matchPos + text.length;
+
+						matchPos = itemStr.search(regex);
+					}
+				}
+			}
+
+			var numOccurences = this.searchResults.length;
+			if(numOccurences > 0) {
+				this.highlightSearchResult(0);
+			} else {
+				this.PDFViewer_onSearch("done", 0, 0, text);
+			}
+		},
+		highlightSearchResult: function (resultID) {
+			var self = this;
+
+			this.clearLastSearchHighlight();
+
+			if(resultID < 0 || resultID >= this.searchResults.length) {
+				if(resultID === -1 && this.searchResults.length === 0) {
+					this.PDFViewer_onSearch("done", -1, 0, this.searchTerm);
+				} else {
+					this.PDFViewer_onSearch("failed", resultID, this.searchResults.length, "Invalid search result index");
+				}
+
+				return;
+			}
+
+			var result = this.searchResults[resultID];
+			if(result.pageID < 0 || result.pageID >= this.pages.length) {
+				this.PDFViewer_onSearch("failed", resultID, this.searchResults.length, "Invalid page index in search result");
+				return;
+			}
+
+			var self = this;
+			this.pages[result.pageID].render(this.scale, this.pdfLinkService, function (page, status) {
+				if(status === PDF_PAGE_RENDER_FAILED) {
+					self.PDFViewer_onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
+				} else if(status === PDF_PAGE_RENDER_CANCELLED) {
+					// Do nothing...
+				} else {
+					if(status === PDF_PAGE_RENDERED) {
+						self.PDFViewer_onPageRendered("success", page.id, self.pdf.numPages, "");
+					}
+
+					page.highlightTextItem(result.itemID, result.matchPos, self.searchTerm);
+
+					self.searchHighlightResultID = resultID;
+					self.PDFViewer_onSearch("done", self.searchHighlightResultID, self.searchResults.length, self.searchTerm);
+				}
+			});
+		},
+		clearLastSearchHighlight: function () {
+			var resultID = this.searchHighlightResultID;
+			if(resultID < 0 || resultID >= this.searchResults.length) {
+				return;
+			}
+
+			this.searchHighlightResultID = -1;
+
+			var result = this.searchResults[resultID];
+			if(result === null) {
+				return;
+			}
+
+			var textLayer = this.pages[result.pageID].textLayer;
+			if(textLayer === null) {
+				return;
+			}
+
+			var textDivs = textLayer.children();
+			if(textDivs === null || textDivs.length === 0) {
+				return;
+			}
+
+			if(result.itemID < 0 || result.itemID >= textDivs.length) {
+				return;
+			}
+
+			var item = textDivs[result.itemID];
+			if(item.childNodes.length !== 3) {
+				return;
+			}
+
+			item.replaceChild(item.childNodes[1].firstChild, item.childNodes[1]);
+			item.normalize();
+		},
+		downloadProgress: function (progressData) {
+			// JD: HACK: Sometimes (depending on the server serving the PDFs) PDF.js doesn't
+			// give us the total size of the document (total == undefined). In this case,
+			// we guess the total size in order to correctly show a progress bar if needed (even
+			// if the actual progress indicator will be incorrect).
+			var total = 0;
+			if (typeof progressData.total === "undefined") {
+				while (total < progressData.loaded) {
+					total += 1024 * 1024;
+				}
+			} else {
+				total = progressData.total;
+			}
+
+			this.PDFViewer_onDataDownloaded("loading", progressData.loaded, total, "");
+		}
+	};
+
 	angular.module("angular-pdf-viewer", []).
 	directive("pdfViewer", [function () {
 		// HACK: A LUT for zoom levels because I cannot find a formula that works in all cases.
@@ -288,474 +748,6 @@
 				currentPage: "="
 			},
 			controller: ['$scope', '$element', function ($scope, $element) {
-				var _ctrl = this;
-
-				_ctrl.pdf = null;
-				_ctrl.pages = [];
-				_ctrl.scale = 1.0;
-				_ctrl.pdfLinkService = null;
-				_ctrl.pagesRefMap = {};
-				_ctrl.searchResults = [];
-				_ctrl.searchTerm = "";
-				_ctrl.searchHighlightResultID = -1;
-				_ctrl.fitWidthScale = 1.0;
-				_ctrl.fitPageScale = 1.0;
-				_ctrl.searching = false;
-				_ctrl.lastScrollY = 0;
-				_ctrl.PDFViewer_onSearch = null;
-				_ctrl.PDFViewer_onPageRendered = null;
-				_ctrl.PDFViewer_onDataDownloaded = null;
-				_ctrl.PDFViewer_onCurrentPageChanged = null;
-				_ctrl.PDFViewer_passwordCallback = null;
-
-				/**
-				 * Returns the inner size of the element taking into account the vertical scrollbar that will
-				 * appear if the element gets really tall. 
-				 * 
-				 * @argument {element} element The element we are calculating its inner size
-				 * @argument {integer} margin Margin around the element (subtracted from the element's size)
-				 */ 
-				_ctrl.getElementInnerSize = function (element, margin) {
-					var tallTempElement = angular.element("<div></div>");
-					tallTempElement.css("height", "10000px");
-					element.append(tallTempElement);
-
-					var w = tallTempElement[0].offsetWidth;
-
-					tallTempElement.remove();
-
-					var h = element[0].offsetHeight;
-					if(h === 0) {
-						// TODO: Should we get the parent height?
-						h = 2 * margin;
-					}
-
-					w -= 2 * margin;
-					h -= 2 * margin;
-
-					return {
-						width: w,
-						height: h
-					};
-				};
-
-				_ctrl.PDFViewer_getAllPages = function (pdf, hasTextLayer, callback) {
-					var self = this,
-					    pageList = [],
-					    pagesRefMap = {},
-					    numPages = pdf.numPages,
-					    remainingPages = numPages;
-
-					if(hasTextLayer) {
-						for(var iPage = 0;iPage < numPages;++iPage) {
-							pageList.push({});
-
-							var getPageTask = pdf.getPage(iPage + 1);
-							getPageTask.then(function (page) {
-								// Page reference map. Required by the annotation layer.
-								var refStr = page.ref.num + ' ' + page.ref.gen + ' R';
-								pagesRefMap[refStr] = page.pageIndex + 1;
-
-								var textContentTask = page.getTextContent();
-								textContentTask.then(function (textContent) {
-									pageList[page.pageIndex] = new PDFPage(page, textContent);
-
-									--remainingPages;
-									if(remainingPages === 0) {
-										callback(pageList, pagesRefMap);
-									}
-								});
-							});
-						}
-					} else {
-						for(var iPage = 0;iPage < numPages;++iPage) {
-							pageList.push({});
-
-							var getPageTask = pdf.getPage(iPage + 1);
-							getPageTask.then(function (page) {
-								pageList[page.pageIndex] = new PDFPage(page, null);
-
-								--remainingPages;
-								if(remainingPages === 0) {
-									callback(pageList, pagesRefMap);
-								}
-							});
-						}
-					}
-				};
-
-				_ctrl.PDFViewer_removeDistantPages = function (curPageID, distance) {
-					var numPages = this.pages.length;
-
-					var firstActivePageID = Math.max(curPageID - distance, 0);
-					var lastActivePageID = Math.min(curPageID + distance, numPages - 1);
-
-					for(var iPage = 0;iPage < firstActivePageID;++iPage) {
-						this.pages[iPage].clear();
-					}
-
-					for(var iPage = lastActivePageID + 1;iPage < numPages;++iPage) {
-						this.pages[iPage].clear();
-					}
-				};
-
-				_ctrl.PDFViewer_calcScale = function (desiredScale, containerSize) {
-					if(desiredScale === "fit_width") {
-						// Find the widest page in the document and fit it to the container.
-						var numPages = this.pages.length;
-						var maxWidth = this.pages[0].pdfPage.getViewport(1.0).width;
-						for(var iPage = 1;iPage < numPages;++iPage) {
-							maxWidth = Math.max(maxWidth, this.pages[iPage].pdfPage.getViewport(1.0).width);
-						}
-
-						return containerSize.width / maxWidth;
-					} else if(desiredScale === "fit_page") {
-						// Find the smaller dimension of the container and fit the 1st page to it.
-						var page0Viewport = this.pages[0].pdfPage.getViewport(1.0);
-
-						if(containerSize.height < containerSize.width) {
-							return containerSize.height / page0Viewport.height;
-						}
-
-						return containerSize.width / page0Viewport.width;
-					}
-
-					var scale = parseFloat(desiredScale);
-					if(isNaN(scale)) {
-						console.log("PDF viewer: " + desiredScale + " isn't a valid scale value.");
-						return 1.0;
-					}
-
-					return scale;
-				};
-
-				_ctrl.PDFViewer_setScale = function (scale) {
-					this.scale = scale;
-
-					var numPages = this.pages.length;
-					for(var iPage = 0;iPage < numPages;++iPage) {
-						// Clear the page's contents...
-						this.pages[iPage].clear();
-
-						// Resize to current scale...
-						this.pages[iPage].resize(scale);
-					}
-
-					this.PDFViewer_highlightSearchResult(this.searchHighlightResultID);
-					this.PDFViewer_renderAllVisiblePages(0);
-				};
-				
-				_ctrl.PDFViewer_setContainerSize = function (initialScale, containerSize) {
-					_ctrl.fitWidthScale = _ctrl.PDFViewer_calcScale("fit_width", containerSize);
-					_ctrl.fitPageScale = _ctrl.PDFViewer_calcScale("fit_page", containerSize);
-
-					_ctrl.PDFViewer_setScale(_ctrl.PDFViewer_calcScale(initialScale, containerSize));
-				};
-
-				_ctrl.PDFViewer_renderAllVisiblePages = function (scrollDir) {
-					var self = this;
-					var numPages = this.pages.length;
-					var currentPageID = 0;
-
-					var atLeastOnePageInViewport = false;
-					for(var iPage = 0;iPage < numPages;++iPage) {
-						var page = this.pages[iPage];
-
-						if(page.isVisible()) {
-							var parentContainer = page.container.parent()[0];
-							var pageTop = page.container[0].offsetTop - parentContainer.scrollTop;
-							if(pageTop <= parentContainer.offsetHeight / 2) {
-								currentPageID = iPage;
-							}
-
-							atLeastOnePageInViewport = true;
-							page.render(_ctrl.scale, _ctrl.pdfLinkService, function (page, status) {
-								if(status === PDF_PAGE_RENDERED) {
-									self.PDFViewer_onPageRendered("success", page.id, self.pdf.numPages, "");
-								} else if (status === PDF_PAGE_RENDER_FAILED) {
-									self.PDFViewer_onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
-								}
-							});
-						} else {
-							if(atLeastOnePageInViewport) {
-								break;
-							}
-						}
-					}
-
-					if(scrollDir !== 0) {
-						var nextPageID = currentPageID + scrollDir;
-						if(nextPageID >= 0 && nextPageID < numPages) {
-							this.pages[nextPageID].render(_ctrl.scale, _ctrl.pdfLinkService, function (page, status) {
-								if(status === PDF_PAGE_RENDERED) {
-									self.PDFViewer_onPageRendered("success", page.id, self.pdf.numPages, "");
-								} else if (status === PDF_PAGE_RENDER_FAILED) {
-									self.PDFViewer_onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
-								}
-							});
-						}
-					}
-
-					this.PDFViewer_removeDistantPages(currentPageID, 5);
-
-					this.PDFViewer_onCurrentPageChanged(currentPageID + 1);
-				};
-
-				_ctrl.PDFViewer_clearLastSearchHighlight = function () {
-					var resultID = this.searchHighlightResultID;
-					if(resultID < 0 || resultID >= this.searchResults.length) {
-						return;
-					}
-
-					this.searchHighlightResultID = -1;
-
-					var result = this.searchResults[resultID];
-					if(result === null) {
-						return;
-					}
-
-					var textLayer = this.pages[result.pageID].textLayer;
-					if(textLayer === null) {
-						return;
-					}
-
-					var textDivs = textLayer.children();
-					if(textDivs === null || textDivs.length === 0) {
-						return;
-					}
-
-					if(result.itemID < 0 || result.itemID >= textDivs.length) {
-						return;
-					}
-
-					var item = textDivs[result.itemID];
-					if(item.childNodes.length !== 3) {
-						return;
-					}
-
-					item.replaceChild(item.childNodes[1].firstChild, item.childNodes[1]);
-					item.normalize();
-				};
-
-				_ctrl.PDFViewer_resetSearch = function () {
-					this.PDFViewer_clearLastSearchHighlight();
-					this.searchResults = [];
-					this.searchTerm = "";
-					this.searchHighlightResultID = -1;
-					
-					this.PDFViewer_onSearch("reset", 0, 0, "");
-				};
-
-				function trim1 (str) {
-					return str.replace(/^\s\s*/, '').replace(/\s\s*$/, '');
-				}
-
-				_ctrl.PDFViewer_search = function (text) {
-					this.PDFViewer_resetSearch();
-					this.searchTerm = text;
-
-					var regex = new RegExp(text, "i");
-
-					var numPages = this.pages.length;
-					for(var iPage = 0;iPage < numPages;++iPage) {
-						var pageTextContent = this.pages[iPage].textContent;
-						if(pageTextContent === null) {
-							continue;
-						}
-
-						var numItems = pageTextContent.items.length;
-						var numItemsSkipped = 0;
-						for(var iItem = 0;iItem < numItems;++iItem) {
-							// Find all occurrences of text in item string.
-							var itemStr = pageTextContent.items[iItem].str;
-							itemStr = trim1(itemStr);
-							if(itemStr.length === 0) {
-								numItemsSkipped++;
-								continue;
-							}
-
-							var matchPos = itemStr.search(regex);
-							var itemStrStartIndex = 0;
-							while(matchPos > -1) {
-								this.searchResults.push({
-									pageID: iPage,
-									itemID: iItem - numItemsSkipped,
-									matchPos: itemStrStartIndex + matchPos
-								});
-
-								itemStr = itemStr.substr(matchPos + text.length);
-								itemStrStartIndex += matchPos + text.length;
-
-								matchPos = itemStr.search(regex);
-							}
-						}
-					}
-
-					var numOccurences = this.searchResults.length;
-					if(numOccurences > 0) {
-						this.PDFViewer_highlightSearchResult(0);
-					} else {
-						this.PDFViewer_onSearch("done", 0, 0, text);
-					}
-				};
-
-				_ctrl.PDFViewer_highlightSearchResult = function (resultID) {
-					var self = this;
-
-					this.PDFViewer_clearLastSearchHighlight();
-
-					if(resultID < 0 || resultID >= this.searchResults.length) {
-						if(resultID === -1 && this.searchResults.length === 0) {
-							this.PDFViewer_onSearch("done", -1, 0, this.searchTerm);
-						} else {
-							this.PDFViewer_onSearch("failed", resultID, this.searchResults.length, "Invalid search result index");
-						}
-
-						return;
-					}
-
-					var result = this.searchResults[resultID];
-					if(result.pageID < 0 || result.pageID >= this.pages.length) {
-						this.PDFViewer_onSearch("failed", resultID, this.searchResults.length, "Invalid page index in search result");
-						return;
-					}
-
-					var self = this;
-					this.pages[result.pageID].render(_ctrl.scale, _ctrl.pdfLinkService, function (page, status) {
-						if(status === PDF_PAGE_RENDER_FAILED) {
-							self.PDFViewer_onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
-						} else if(status === PDF_PAGE_RENDER_CANCELLED) {
-							// Do nothing...
-						} else {
-							if(status === PDF_PAGE_RENDERED) {
-								self.PDFViewer_onPageRendered("success", page.id, self.pdf.numPages, "");
-							}
-
-							page.highlightTextItem(result.itemID, result.matchPos, self.searchTerm);
-
-							self.searchHighlightResultID = resultID;
-							self.PDFViewer_onSearch("done", self.searchHighlightResultID, self.searchResults.length, self.searchTerm);
-						}
-					});
-				};
-
-				_ctrl.PDFViewer_downloadProgress = function (progressData) {
-					// JD: HACK: Sometimes (depending on the server serving the PDFs) PDF.js doesn't
-					// give us the total size of the document (total == undefined). In this case,
-					// we guess the total size in order to correctly show a progress bar if needed (even
-					// if the actual progress indicator will be incorrect).
-					var total = 0;
-					if (typeof progressData.total === "undefined") {
-						while (total < progressData.loaded) {
-							total += 1024 * 1024;
-						}
-					} else {
-						total = progressData.total;
-					}
-
-					this.PDFViewer_onDataDownloaded("loading", progressData.loaded, total, "");
-				};
-				
-				_ctrl.PDFViewer_setUrl = function (url, element, initialScale, renderTextLayer, api) {
-					this.PDFViewer_resetSearch();
-					this.pages = [];
-					this.lastScrollY = 0;
-					this.pdfLinkService = null;
-					this.pagesRefMap = {};
-
-					var self = this;
-					var getDocumentTask = PDFJS.getDocument(url, null, angular.bind(this, this.PDFViewer_passwordCallback), angular.bind(this, this.PDFViewer_downloadProgress));
-					getDocumentTask.then(function (pdf) {
-						self.pdf = pdf;
-
-						// Get all the pages...
-						self.PDFViewer_getAllPages(pdf, renderTextLayer, function (pageList, pagesRefMap) {
-							self.pages = pageList;
-							self.pagesRefMap = pagesRefMap;
-							self.pdfLinkService = new PDFLinkService(pagesRefMap, api);
-
-							// Append all page containers to the $element...
-							for(var iPage = 0;iPage < pageList.length; ++iPage) {
-								element.append(pageList[iPage].container);
-							}
-
-							var containerSize = self.getElementInnerSize(element, pageMargin);
-							self.PDFViewer_setContainerSize(initialScale, containerSize);
-						});
-					}, function (message) {
-						self.PDFViewer_onDataDownloaded("failed", 0, 0, "PDF.js: " + message);
-					});
-				};
-				
-				_ctrl.PDFViewer_setFile = function (file, element, initialScale, renderTextLayer, api) {
-					this.PDFViewer_resetSearch();
-					this.pages = [];
-					this.lastScrollY = 0;
-					this.pdfLinkService = null;
-					this.pagesRefMap = {};
-
-					var self = this;
-					var reader = new FileReader();
-					reader.onload = function(e) {
-						var arrayBuffer = e.target.result;
-						var uint8Array = new Uint8Array(arrayBuffer);
-
-						var getDocumentTask = PDFJS.getDocument(uint8Array, null, angular.bind(self, self.PDFViewer_passwordCallback), angular.bind(self, self.PDFViewer_downloadProgress));
-						getDocumentTask.then(function (pdf) {
-							self.pdf = pdf;
-
-							// Get all the pages...
-							self.PDFViewer_getAllPages(pdf, renderTextLayer, function (pageList, pagesRefMap) {
-								self.pages = pageList;
-								self.pagesRefMap = pagesRefMap;
-								self.pdfLinkService = new PDFLinkService(pagesRefMap, api);
-
-								// Append all page containers to the $element...
-								for(var iPage = 0;iPage < pageList.length; ++iPage) {
-									element.append(pageList[iPage].container);
-								}
-
-								var containerSize = self.getElementInnerSize(element, pageMargin);
-								self.PDFViewer_setContainerSize(initialScale, containerSize);
-							});
-						}, function (message) {
-							self.PDFViewer_onDataDownloaded("failed", 0, 0, "PDF.js: " + message);
-						});
-					};
-
-					reader.onprogress = function (e) {
-						self.PDFViewer_downloadProgress(e);
-					};
-
-					reader.onloadend = function (e) {
-						var error = e.target.error;
-						if(error !== null) {
-							var message = "File API error: ";
-							switch(e.code) {
-								case error.ENCODING_ERR:
-									message += "Encoding error.";
-									break;
-								case error.NOT_FOUND_ERR:
-									message += "File not found.";
-									break;
-								case error.NOT_READABLE_ERR:
-									message += "File could not be read.";
-									break;
-								case error.SECURITY_ERR:
-									message += "Security issue with file.";
-									break;
-								default:
-									message += "Unknown error.";
-									break;
-							}
-
-							self.PDFViewer_onDataDownloaded("failed", 0, 0, message);
-						}
-					};
-
-					reader.readAsArrayBuffer(file);
-				};
-
 				$scope.onPageRendered = function (status, pageID, numPages, message) {
 					this.onProgress("render", status, pageID, numPages, message);
 				};
@@ -819,11 +811,12 @@
 					}
 				};
 
-				_ctrl.PDFViewer_onSearch = angular.bind($scope, $scope.onSearch);
-				_ctrl.PDFViewer_onPageRendered = angular.bind($scope, $scope.onPageRendered);
-				_ctrl.PDFViewer_onDataDownloaded = angular.bind($scope, $scope.onDataDownloaded);
-				_ctrl.PDFViewer_onCurrentPageChanged = angular.bind($scope, $scope.onCurrentPageChanged);
-				_ctrl.PDFViewer_passwordCallback = angular.bind($scope, $scope.getPDFPassword);
+				$scope.viewer = new PDFViewer();
+				$scope.viewer.PDFViewer_onSearch = angular.bind($scope, $scope.onSearch);
+				$scope.viewer.PDFViewer_onPageRendered = angular.bind($scope, $scope.onPageRendered);
+				$scope.viewer.PDFViewer_onDataDownloaded = angular.bind($scope, $scope.onDataDownloaded);
+				$scope.viewer.PDFViewer_onCurrentPageChanged = angular.bind($scope, $scope.onCurrentPageChanged);
+				$scope.viewer.PDFViewer_passwordCallback = angular.bind($scope, $scope.getPDFPassword);
 
 				$scope.shouldRenderTextLayer = function () {
 					if(this.renderTextLayer === "" || this.renderTextLayer === undefined || this.renderTextLayer === null || this.renderTextLayer.toLowerCase() === "false") {
@@ -834,7 +827,7 @@
 				};
 
 				$scope.resetSearch = function () {
-					_ctrl.PDFViewer_resetSearch();
+					this.viewer.resetSearch();
 				};
 
 				$scope.searchPDF = function (text) {
@@ -842,24 +835,24 @@
 						return;
 					}
 
-					_ctrl.PDFViewer_search(text);
+					this.viewer.search(text);
 				};
 
 				$scope.onPDFSrcChanged = function () {
 					$element.empty();
-					_ctrl.PDFViewer_setUrl(this.src, $element, this.initialScale, this.shouldRenderTextLayer(), this.api);
+					this.viewer.setUrl(this.src, $element, this.initialScale, this.shouldRenderTextLayer(), pageMargin, this.api);
 				};
 
 				$scope.onPDFFileChanged = function () {
 					$element.empty();
-					_ctrl.PDFViewer_setFile(this.file, $element, this.initialScale, this.shouldRenderTextLayer(), this.api);
+					this.viewer.setFile(this.file, $element, this.initialScale, this.shouldRenderTextLayer(), pageMargin, this.api);
 				};
 
 				$element.bind("scroll", function (event) {
 					$scope.$apply(function () {
-						var scrollDir = $element[0].scrollTop - _ctrl.lastScrollY;
-						_ctrl.lastScrollY = $element[0].scrollTop;
-						_ctrl.PDFViewer_renderAllVisiblePages(scrollDir > 0 ? 1 : (scrollDir < 0 ? -1 : 0));
+						var scrollDir = $element[0].scrollTop - $scope.viewer.lastScrollY;
+						$scope.viewer.lastScrollY = $element[0].scrollTop;
+						$scope.viewer.renderAllVisiblePages(scrollDir > 0 ? 1 : (scrollDir < 0 ? -1 : 0));
 					});
 				});
 
@@ -877,14 +870,14 @@
 								}
 							}
 
-							if(scale < _ctrl.fitWidthScale && newScale > _ctrl.fitWidthScale) {
+							if(scale < viewer.viewer.fitWidthScale && newScale > viewer.viewer.fitWidthScale) {
 								return {
-									value: _ctrl.fitWidthScale,
+									value: viewer.viewer.fitWidthScale,
 									label: "Fit width"
 								};
-							} else if(scale < _ctrl.fitPageScale && newScale > _ctrl.fitPageScale) {
+							} else if(scale < viewer.viewer.fitPageScale && newScale > viewer.viewer.fitPageScale) {
 								return {
-									value: _ctrl.fitPageScale,
+									value: viewer.viewer.fitPageScale,
 									label: "Fit page"
 								};
 							}
@@ -905,14 +898,14 @@
 								}
 							}
 
-							if(scale > _ctrl.fitWidthScale && newScale < _ctrl.fitWidthScale) {
+							if(scale > viewer.viewer.fitWidthScale && newScale < viewer.viewer.fitWidthScale) {
 								return {
-									value: _ctrl.fitWidthScale,
+									value: viewer.viewer.fitWidthScale,
 									label: "Fit width"
 								};
-							} else if(scale > _ctrl.fitPageScale && newScale < _ctrl.fitPageScale) {
+							} else if(scale > viewer.viewer.fitPageScale && newScale < viewer.viewer.fitPageScale) {
 								return {
-									value: _ctrl.fitPageScale,
+									value: viewer.viewer.fitPageScale,
 									label: "Fit page"
 								};
 							}
@@ -925,67 +918,67 @@
 						zoomTo: function (scale) {
 							if(isNaN(parseFloat(scale))) {
 								// scale isn't a valid floating point number. Let
-								// PDFViewer_calcScale() handle it (e.g. fit_width or fit_page).
-								var containerSize = _ctrl.getElementInnerSize($element, pageMargin);
-								scale = _ctrl.PDFViewer_calcScale(scale, containerSize);
+								// PDFViewer.calcScale() handle it (e.g. fit_width or fit_page).
+								var containerSize = getElementInnerSize($element, pageMargin);
+								scale = viewer.viewer.calcScale(scale, containerSize);
 							}
 
-							_ctrl.PDFViewer_setScale(scale);
+							viewer.viewer.setScale(scale);
 						},
 						getZoomLevel: function () {
-							return _ctrl.scale;
+							return viewer.viewer.scale;
 						},
 						goToPage: function (pageIndex) {
-							if(_ctrl.pdf === null || pageIndex < 1 || pageIndex > _ctrl.pdf.numPages) {
+							if(viewer.viewer.pdf === null || pageIndex < 1 || pageIndex > viewer.viewer.pdf.numPages) {
 								return;
 							}
 
-							_ctrl.pages[pageIndex - 1].container[0].scrollIntoView();
+							viewer.viewer.pages[pageIndex - 1].container[0].scrollIntoView();
 						},
 						goToNextPage: function () {
-							if(_ctrl.pdf === null) {
+							if(viewer.viewer.pdf === null) {
 								return;
 							}
 
 							this.goToPage(viewer.currentPage + 1);
 						},
 						goToPrevPage: function () {
-							if(_ctrl.pdf === null) {
+							if(viewer.viewer.pdf === null) {
 								return;
 							}
 
 							this.goToPage(viewer.currentPage - 1);
 						},
 						getNumPages: function () {
-							if(_ctrl.pdf === null) {
+							if(viewer.viewer.pdf === null) {
 								return 0;
 							}
 
-							return _ctrl.pdf.numPages;
+							return viewer.viewer.pdf.numPages;
 						},
 						findNext: function () {
-							if(_ctrl.searching) {
+							if(viewer.viewer.searching) {
 								return;
 							}
 
 							var nextHighlightID = viewer.searchResultId + 1;
-							if(nextHighlightID > _ctrl.searchResults.length) {
+							if(nextHighlightID > viewer.viewer.searchResults.length) {
 								nextHighlightID = 1;
 							}
 
-							_ctrl.PDFViewer_highlightSearchResult(nextHighlightID - 1);
+							viewer.viewer.highlightSearchResult(nextHighlightID - 1);
 						},
 						findPrev: function () {
-							if(_ctrl.searching) {
+							if(viewer.viewer.searching) {
 								return;
 							}
 
 							var prevHighlightID = viewer.searchResultId - 1;
 							if(prevHighlightID <= 0) {
-								prevHighlightID = _ctrl.searchResults.length;
+								prevHighlightID = viewer.viewer.searchResults.length;
 							}
 
-							_ctrl.PDFViewer_highlightSearchResult(prevHighlightID - 1);
+							viewer.viewer.highlightSearchResult(prevHighlightID - 1);
 						}
 					};
 				})($scope);
