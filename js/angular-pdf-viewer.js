@@ -180,7 +180,7 @@
 						renderTask: null
 					};
 				};
-				
+
 				_ctrl.PDFPage_clear = function (page) {
 					if(page.renderTask !== null) {
 						page.renderTask.cancel();
@@ -213,6 +213,91 @@
 					var pageBottom = pageTop + pageContainer.offsetHeight;
 
 					return pageBottom >= 0 && pageTop <= parentContainer.offsetHeight;
+				};
+
+				_ctrl.PDFPage_render = function (page, scale) {
+					var self = this;
+
+					return new Promise(function (resolve, reject) {
+						if(page.rendered) {
+							if(page.renderTask === null) {
+								resolve({
+									pageID: page.id,
+									status: 0 // TODO: Make this a constant. Means "Page already exists"
+								});
+							} else {
+								page.renderTask.then(function () {
+									resolve({
+										pageID: page.id,
+										status: 2 // TODO: Make thid a constant. Means "Page already scheduled for rendering"
+									});
+								});
+							}
+
+							return;
+						}
+						
+						var viewport = page.pdfPage.getViewport(scale);
+
+						page.rendered = true;
+
+						page.renderTask = page.pdfPage.render({
+							canvasContext: page.canvas[0].getContext('2d'),
+							viewport: viewport
+						});
+						
+						page.renderTask.then(function () {
+							page.rendered = true;
+							page.renderTask = null;
+
+							page.container.append(page.canvas);
+
+							if(page.textContent) {
+								// Render the text layer...
+								var textLayerBuilder = new TextLayerBuilder({
+									textLayerDiv: page.textLayer[0],
+									pageIndex: page.id,
+									viewport: viewport
+								});
+
+								textLayerBuilder.setTextContent(page.textContent);
+								textLayerBuilder.renderLayer();
+								page.container.append(page.textLayer);
+
+								// Render the annotation layer...
+								// NOTE: Annotation div is inserted into the page div iff
+								// there are annotations in the current page. This is 
+								// handled by the AnnotationLayerBuilder.
+								var annotationLayerBuilder = new AnnotationsLayerBuilder({
+									pageDiv: page.container[0],
+									pdfPage: page.pdfPage,
+									linkService: self.pdfLinkService
+								});
+
+								annotationLayerBuilder.setupAnnotations(viewport);
+							}
+							
+							resolve({
+								pageID: page.id,
+								status: 1 // TODO: Make this a constant. Means "Page rendered"
+							});
+						}, function (message) {
+							page.rendered = false;
+							page.renderTask = null;
+
+							if(message === "cancelled") {
+								resolve({
+									pageID: page.id,
+									status: 3 // TODO: Make this a constant. Means "Page rendering cancelled"
+								});
+							} else {			
+								reject({
+									pageID: page.id,
+									message: "PDF.js: " + message
+								});
+							}
+						});
+					});
 				};
 
 				_ctrl.PDFPage_highlightItem = function (page, itemID, matchPos, text) {
@@ -382,6 +467,71 @@
 					item.normalize();
 				};
 
+				_ctrl.PDFViewer_resetSearch = function () {
+					this.searchResults = [];
+				};
+
+				function trim1 (str) {
+					return str.replace(/^\s\s*/, '').replace(/\s\s*$/, '');
+				}
+
+				_ctrl.PDFViewer_search = function (text) {
+					this.PDFViewer_resetSearch();
+
+					var regex = new RegExp(text, "i");
+
+					var numPages = this.pages.length;
+					for(var iPage = 0;iPage < numPages;++iPage) {
+						var pageTextContent = this.pages[iPage].textContent;
+						if(pageTextContent === null) {
+							continue;
+						}
+
+						var numItems = pageTextContent.items.length;
+						var numItemsSkipped = 0;
+						for(var iItem = 0;iItem < numItems;++iItem) {
+							// Find all occurrences of text in item string.
+							var itemStr = pageTextContent.items[iItem].str;
+							itemStr = trim1(itemStr);
+							if(itemStr.length === 0) {
+								numItemsSkipped++;
+								continue;
+							}
+
+							var matchPos = itemStr.search(regex);
+							var itemStrStartIndex = 0;
+							while(matchPos > -1) {
+								this.searchResults.push({
+									pageID: iPage,
+									itemID: iItem - numItemsSkipped,
+									matchPos: itemStrStartIndex + matchPos
+								});
+
+								itemStr = itemStr.substr(matchPos + text.length);
+								itemStrStartIndex += matchPos + text.length;
+
+								matchPos = itemStr.search(regex);
+							}
+						}
+					}
+
+					return this.searchResults.length;
+				};
+				
+				$scope.onProgress = function (operation, state, value, total, message) {
+					if ($scope.progressCallback) {
+						$scope.$apply(function () {
+							$scope.progressCallback({ 
+								operation: operation,
+								state: state, 
+								value: value, 
+								total: total,
+								message: message
+							});
+						});
+					}
+				};
+
 				$scope.downloadProgress = function (progressData) {
 					// JD: HACK: Sometimes (depending on the server serving the PDFs) PDF.js doesn't
 					// give us the total size of the document (total == undefined). In this case,
@@ -396,18 +546,7 @@
 						total = progressData.total;
 					}
 
-					// Inform the client about the progress...
-					if ($scope.progressCallback) {
-						$scope.$apply(function () {
-							$scope.progressCallback({ 
-								operation: "download",
-								state: "loading", 
-								value: progressData.loaded, 
-								total: total,
-								message: ""
-							});
-						});
-					}
+					$scope.onProgress("download", "loading", progressData.loaded, total, "");
 				};
 
 				$scope.getPDFPassword = function (passwordFunc, reason) {
@@ -419,27 +558,11 @@
 							if(password !== "" && password !== undefined && password !== null) {
 								passwordFunc(password);
 							} else {
-								if ($scope.progressCallback) {
-									$scope.progressCallback({ 
-										operation: "render",
-										state: "failed", 
-										value: 1, 
-										total: 0,
-										message: "A password is required to read this document."
-									});
-								}
+								$scope.onProgress("render", "failed", 1, 0, "A password is required to read this document.");
 							}
 						});
 					} else {
-						if ($scope.progressCallback) {
-							$scope.progressCallback({ 
-								operation: "render",
-								state: "failed", 
-								value: 1, 
-								total: 0,
-								message: "A password is required to read this document."
-							});
-						}
+						$scope.onProgress("render", "failed", 1, 0, "A password is required to read this document.");
 					}
 				};
 
@@ -465,179 +588,51 @@
 
 					var self = this;
 					this.searching = true;
-					this.renderPDFPage(result.pageID, this.scale, function () {
-						_ctrl.PDFPage_highlightItem(_ctrl.pages[result.pageID], result.itemID, result.matchPos, self.searchTerm);
+					_ctrl.PDFPage_render(_ctrl.pages[result.pageID], this.scale).then(function (data) {
 						self.searchResultId = resultID + 1;
 						self.searching = false;
+
+						if(data.status === 1) {
+							self.onProgress("render", "success", data.pageID, _ctrl.pages.length, "");
+						} else if(data.status === 3) {
+							return; // Page cancelled so no point in highlighting anything...
+						}
+
+						_ctrl.PDFPage_highlightItem(_ctrl.pages[result.pageID], result.itemID, result.matchPos, self.searchTerm);
+					}, function (data) {
+						self.onProgress("render", "failed", data.pageID, 0, data.message);
 					});
 				};
 
 				$scope.resetSearch = function () {
 					_ctrl.PDFViewer_clearSearchHighlight(this.searchResultId);
-					_ctrl.searchResults = [];
+					_ctrl.PDFViewer_resetSearch();
 					this.searchResultId = 0;
 					this.searchNumOccurences = 0;
 					this.searchTerm = "";
 				};
 
-				function trim1 (str) {
-					return str.replace(/^\s\s*/, '').replace(/\s\s*$/, '');
-				}
-
 				$scope.searchPDF = function (text) {
 					if(!this.shouldRenderTextLayer()) {
-						return 0;
+						return;
 					}
 
 					this.resetSearch();
 
 					this.searchTerm = text;
 
-					var regex = new RegExp(text, "i");
+					var numOccurences = _ctrl.PDFViewer_search(text);
 
-					var numPages = _ctrl.pages.length;
-					for(var iPage = 0;iPage < numPages;++iPage) {
-						var pageTextContent = _ctrl.pages[iPage].textContent;
-						if(pageTextContent === null) {
-							continue;
-						}
-
-						var numItems = pageTextContent.items.length;
-						var numItemsSkipped = 0;
-						for(var iItem = 0;iItem < numItems;++iItem) {
-							// Find all occurrences of text in item string.
-							var itemStr = pageTextContent.items[iItem].str;
-							itemStr = trim1(itemStr);
-							if(itemStr.length === 0) {
-								numItemsSkipped++;
-								continue;
-							}
-
-							var matchPos = itemStr.search(regex);
-							var itemStrStartIndex = 0;
-							while(matchPos > -1) {
-								_ctrl.searchResults.push({
-									pageID: iPage,
-									itemID: iItem - numItemsSkipped,
-									matchPos: itemStrStartIndex + matchPos
-								});
-
-								itemStr = itemStr.substr(matchPos + text.length);
-								itemStrStartIndex += matchPos + text.length;
-
-								matchPos = itemStr.search(regex);
-							}
-						}
-					}
-
-					if(_ctrl.searchResults.length > 0) {
+					if(numOccurences > 0) {
 						this.highlightSearchResult(0);
 					}
 
-					this.searchNumOccurences =  _ctrl.searchResults.length;
-				};
-
-				$scope.renderPDFPage = function (pageID, scale, callback) {
-					var self = this;
-					var page = _ctrl.pages[pageID];
-
-					if(page.rendered) {
-						if(page.renderTask === null) {
-							if(callback) {
-								callback(pageID);
-							}
-						} else {
-							if(callback) {
-								page.renderTask.then(function () {
-									callback(pageID);
-								});
-							}
-						}
-
-						return;
-					}
-
-					var viewport = page.pdfPage.getViewport(scale);
-
-					page.rendered = true;
-
-					page.renderTask = page.pdfPage.render({
-						canvasContext: page.canvas[0].getContext('2d'),
-						viewport: viewport
-					});
-
-					page.renderTask.then(function () {
-						page.rendered = true;
-						page.renderTask = null;
-
-						page.container.append(page.canvas);
-
-						if(page.textContent) {
-							// Render the text layer...
-							var textLayerBuilder = new TextLayerBuilder({
-								textLayerDiv: page.textLayer[0],
-								pageIndex: pageID,
-								viewport: viewport
-							});
-
-							textLayerBuilder.setTextContent(page.textContent);
-							textLayerBuilder.renderLayer();
-							page.container.append(page.textLayer);
-
-							// Render the annotation layer...
-							// NOTE: Annotation div is inserted into the page div iff
-							// there are annotations in the current page. This is 
-							// handled by the AnnotationLayerBuilder.
-							var annotationLayerBuilder = new AnnotationsLayerBuilder({
-								pageDiv: page.container[0],
-								pdfPage: page.pdfPage,
-								linkService: self.pdfLinkService
-							});
-
-							annotationLayerBuilder.setupAnnotations(viewport);
-						}
-
-						if(callback !== null) {
-							callback(pageID);
-						}
-
-						// Inform the client that the page has been rendered.
-						if (self.progressCallback) {
-							self.$apply(function () {
-								self.progressCallback({ 
-									operation: "render",
-									state: "success",
-									value: pageID + 1, 
-									total: _ctrl.pages.length,
-									message: ""
-								});
-							});
-						}
-					}, function (message) {
-						page.rendered = false;
-						page.renderTask = null;
-
-						if(message === "cancelled") {
-							console.log("page render task cancelled");
-							return;
-						}
-
-						// Inform the client that something went wrong while rendering the specified page!
-						if (self.progressCallback) {
-							self.$apply(function () {
-								self.progressCallback({ 
-									operation: "render",
-									state: "failed",
-									value: pageID + 1, 
-									total: _ctrl.pages.length,
-									message: "PDF.js: " + message
-								});
-							});
-						}
-					});
+					this.searchNumOccurences =  numOccurences;
 				};
 
 				$scope.renderAllVisiblePages = function (scrollDir) {
+					var self = this;
+
 					// Since pages are placed one after the other, we can stop the loop once
 					// we find a page outside the viewport, iff we've already found one *inside* 
 					// the viewport. It helps with large PDFs.
@@ -655,7 +650,13 @@
 							}
 
 							atLeastOnePageInViewport = true;
-							this.renderPDFPage(iPage, this.scale, null);
+							_ctrl.PDFPage_render(_ctrl.pages[iPage], this.scale).then(function (data) {
+								if(data.status === 1) {
+									self.onProgress("render", "success", data.pageID, _ctrl.pages.length, "");
+								}
+							}, function (data) {
+								self.onProgress("render", "failed", data.pageID, 0, data.message);
+							});
 						} else {
 							if(atLeastOnePageInViewport) {
 								break;
@@ -666,7 +667,13 @@
 					if(scrollDir !== 0) {
 						var nextPageID = currentPageID + scrollDir;
 						if(nextPageID >= 0 && nextPageID < numPages) {
-							this.renderPDFPage(nextPageID, this.scale, null);
+							_ctrl.PDFPage_render(_ctrl.pages[nextPageID], this.scale).then(function (data) {
+								if(data.status === 1) {
+									self.onProgress("render", "success", data.pageID, _ctrl.pages.length, "");
+								}
+							}, function (data) {
+								self.onProgress("render", "failed", data.pageID, 0, data.message);
+							});
 						}
 					}
 
@@ -700,9 +707,6 @@
 				};
 
 				$scope.onPDFSrcChanged = function () {
-					// TODO: Set the correct flag based on client's choice.
-					PDFJS.disableTextLayer = false;
-
 					// Since the PDF has changed we must clear the $element.
 					this.resetSearch();
 					_ctrl.pages = [];
@@ -731,25 +735,11 @@
 							self.onContainerSizeChanged(containerSize);
 						});
 					}, function (message) {
-						// Inform the client that something went wrong and we couldn't read the specified pdf.
-						if (self.progressCallback) {
-							self.$apply(function () {
-								self.progressCallback({ 
-									operation: "download",
-									state: "failed",
-									value: 0,
-									total: 0,
-									message: "PDF.js: " + message
-								});
-							});
-						}
+						self.onProgress("download", "failed", 0, 0, "PDF.js: " + message);
 					});
 				};
 
 				$scope.onPDFFileChanged = function () {
-					// TODO: Set the correct flag based on client's choice.
-					PDFJS.disableTextLayer = false;
-
 					// Since the PDF has changed we must clear the $element.
 					this.resetSearch();
 					_ctrl.pages = [];
@@ -783,18 +773,7 @@
 								self.onContainerSizeChanged(containerSize);
 							});
 						}, function (message) {
-							// Inform the client that something went wrong and we couldn't read the specified pdf.
-							if (self.progressCallback) {
-								self.$apply(function () {
-									self.progressCallback({ 
-										operation: "download",
-										state: "failed",
-										value: 0,
-										total: 0,
-										message: "PDF.js: " + message
-									});
-								});
-							}
+							self.onProgress("download", "failed", 0, 0, "PDF.js: " + message);
 						});
 					};
 
@@ -824,17 +803,7 @@
 									break;
 							}
 
-							if (self.progressCallback) {
-								self.$apply(function () {
-									self.progressCallback({ 
-										operation: "download",
-										state: "failed",
-										value: 0,
-										total: 0,
-										message: message
-									});
-								});
-							}
+							self.onProgress("download", "failed", 0, 0, message);
 						}
 					};
 
