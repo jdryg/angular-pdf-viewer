@@ -84,6 +84,179 @@
 			}
 		}
 	};
+	
+	var PDF_PAGE_RENDER_FAILED = -1;
+	var PDF_PAGE_RENDER_CANCELLED = 0;
+	var PDF_PAGE_RENDERED = 1;
+	var PDF_PAGE_ALREADY_RENDERED = 2;
+
+	function PDFPage(pdfPage, textContent) {
+		this.id = pdfPage.pageIndex + 1;
+		this.container = angular.element("<div class='page'></div>");
+		this.container.attr("id", "page_" + pdfPage.pageIndex);
+
+		this.canvas = angular.element("<canvas></canvas>");
+		this.textLayer = angular.element("<div class='text-layer'></div>");
+
+		this.pdfPage = pdfPage;
+		this.textContent = textContent;
+		this.rendered = false;
+		this.renderTask = null;
+	}
+	
+	PDFPage.prototype = {
+		clear: function () {
+			if(this.renderTask !== null) {
+				this.renderTask.cancel();
+			}
+
+			this.rendered = false;
+			this.renderTask = null;
+			this.textLayer.empty();
+			this.container.empty();
+		},
+		resize: function (scale) {
+			var viewport = this.pdfPage.getViewport(scale);
+
+			this.canvas.attr("width", viewport.width);
+			this.canvas.attr("height", viewport.height);
+
+			this.container.css("width", viewport.width + "px");
+			this.container.css("height", viewport.height + "px");
+
+			this.textLayer.css("width", viewport.width + "px");
+			this.textLayer.css("height", viewport.height + "px");
+		},
+		isVisible: function () {
+			var pageContainer = this.container[0];
+			var parentContainer = this.container.parent()[0];
+
+			var pageTop = pageContainer.offsetTop - parentContainer.scrollTop;
+			var pageBottom = pageTop + pageContainer.offsetHeight;
+
+			return pageBottom >= 0 && pageTop <= parentContainer.offsetHeight;
+		},
+		highlightTextItem: function (itemID, matchPos, text) {
+			var textLayer = this.textLayer;
+			if(textLayer === null) {
+				return;
+			}
+			
+			var textDivs = textLayer.children();
+			var item = textDivs[itemID];
+			
+			var before = item.childNodes[0].nodeValue.substr(0, matchPos);
+			var middle = item.childNodes[0].nodeValue.substr(matchPos, text.length);
+			var after = document.createTextNode(item.childNodes[0].nodeValue.substr(matchPos + text.length));
+			
+			var highlight_span = document.createElement("span");
+			highlight_span.className = "highlight";
+			
+			highlight_span.appendChild(document.createTextNode(middle));
+			
+			item.childNodes[0].nodeValue = before;
+			item.childNodes[0].parentNode.insertBefore(after, item.childNodes[0].nextSibling);
+			item.childNodes[0].parentNode.insertBefore(highlight_span, item.childNodes[0].nextSibling);
+			
+			// Scroll to item...
+			var parentContainer = this.container.parent()[0];
+			
+			var curScrollTop = parentContainer.scrollTop;
+			var containerHeight = parentContainer.offsetHeight;
+			
+			highlight_span.scrollIntoView();
+			
+			var newScrollTop = parentContainer.scrollTop;
+			
+			var scrolledDown = newScrollTop > curScrollTop;
+			var newScrollPosInOldViewport = curScrollTop + containerHeight > newScrollTop;
+			var scrolledToEnd = newScrollTop >= parentContainer.scrollHeight - containerHeight;
+			
+			if(scrolledDown && newScrollPosInOldViewport && !scrolledToEnd) {
+				parentContainer.scrollTop = curScrollTop;
+			} else {
+				parentContainer.scrollTop -= containerHeight / 4;
+			}
+		},
+		render: function (scale, linkService, callback) {
+			if(this.rendered) {
+				if(this.renderTask === null) {
+					if(callback) {
+						callback(this, PDF_PAGE_ALREADY_RENDERED);
+					}
+				} else {
+					this.renderTask.then(function () {
+						if(callback) {
+							callback(this, PDF_PAGE_ALREADY_RENDERED);
+						}
+					});
+				}
+
+				return;
+			}
+
+			var viewport = this.pdfPage.getViewport(scale);
+
+			this.rendered = true;
+
+			this.renderTask = this.pdfPage.render({
+				canvasContext: this.canvas[0].getContext('2d'),
+				viewport: viewport
+			});
+
+			var self = this;
+			this.renderTask.then(function () {
+				self.rendered = true;
+				self.renderTask = null;
+
+				self.container.append(self.canvas);
+
+				if(self.textContent) {
+					// Render the text layer...
+					var textLayerBuilder = new TextLayerBuilder({
+						textLayerDiv: self.textLayer[0],
+						pageIndex: self.id,
+						viewport: viewport
+					});
+
+					textLayerBuilder.setTextContent(self.textContent);
+					textLayerBuilder.renderLayer();
+					self.container.append(self.textLayer);
+
+					if(linkService) {
+						// Render the annotation layer...
+						// NOTE: Annotation div is inserted into the page div iff
+						// there are annotations in the current page. This is 
+						// handled by the AnnotationLayerBuilder.
+						var annotationLayerBuilder = new AnnotationsLayerBuilder({
+							pageDiv: self.container[0],
+							pdfPage: self.pdfPage,
+							linkService: linkService
+						});
+
+						annotationLayerBuilder.setupAnnotations(viewport);
+					}
+				}
+
+				if(callback) {
+					callback(self, PDF_PAGE_RENDERED);
+				}
+			}, function (message) {
+				self.rendered = false;
+				self.renderTask = null;
+
+				if(message === "cancelled") {
+					if(callback) {
+						callback(self, PDF_PAGE_RENDER_CANCELLED);
+					}
+				} else {
+					if(callback) {
+						callback(self, PDF_PAGE_RENDER_FAILED);
+					}
+				}
+			});
+		}
+	};
 
 	angular.module("angular-pdf-viewer", []).
 	directive("pdfViewer", [function () {
@@ -166,191 +339,6 @@
 					};
 				};
 
-				_ctrl.PDFPage_create = function (pdfPage, textContent) {
-					var pageContainer = angular.element("<div></div>");
-					pageContainer.addClass("page");
-					pageContainer.attr("id", "page_" + pdfPage.pageIndex);
-
-					var canvasElement = angular.element("<canvas></canvas>");
-					var textLayerElement = angular.element("<div></div>");
-					textLayerElement.addClass("text-layer");
-
-					return {
-						id: pdfPage.pageIndex + 1,
-						pdfPage: pdfPage,
-						textContent: textContent,
-						container: pageContainer,
-						canvas: canvasElement,
-						textLayer: textLayerElement,
-						rendered: false,
-						renderTask: null
-					};
-				};
-
-				_ctrl.PDFPage_clear = function (page) {
-					if(page.renderTask !== null) {
-						page.renderTask.cancel();
-					}
-
-					page.rendered = false;
-					page.renderTask = null;
-					page.textLayer.empty();
-					page.container.empty();
-				};
-
-				_ctrl.PDFPage_resizeToScale = function (page, scale) {
-					var viewport = page.pdfPage.getViewport(scale);
-
-					page.container.css("width", viewport.width + "px");
-					page.container.css("height", viewport.height + "px");
-
-					page.canvas.attr("width", viewport.width);
-					page.canvas.attr("height", viewport.height);
-
-					page.textLayer.css("width", viewport.width + "px");
-					page.textLayer.css("height", viewport.height + "px");
-				};
-
-				_ctrl.PDFPage_isVisible = function (page) {
-					var pageContainer = page.container[0];
-					var parentContainer = page.container.parent()[0];
-
-					var pageTop = pageContainer.offsetTop - parentContainer.scrollTop;
-					var pageBottom = pageTop + pageContainer.offsetHeight;
-
-					return pageBottom >= 0 && pageTop <= parentContainer.offsetHeight;
-				};
-
-				_ctrl.PDFPage_render = function (page, scale) {
-					var self = this;
-
-					return new Promise(function (resolve, reject) {
-						if(page.rendered) {
-							if(page.renderTask === null) {
-								resolve({
-									pageID: page.id,
-									status: 0 // TODO: Make this a constant. Means "Page already exists"
-								});
-							} else {
-								page.renderTask.then(function () {
-									resolve({
-										pageID: page.id,
-										status: 2 // TODO: Make thid a constant. Means "Page already scheduled for rendering"
-									});
-								});
-							}
-
-							return;
-						}
-
-						var viewport = page.pdfPage.getViewport(scale);
-
-						page.rendered = true;
-
-						page.renderTask = page.pdfPage.render({
-							canvasContext: page.canvas[0].getContext('2d'),
-							viewport: viewport
-						});
-
-						page.renderTask.then(function () {
-							page.rendered = true;
-							page.renderTask = null;
-
-							page.container.append(page.canvas);
-
-							if(page.textContent) {
-								// Render the text layer...
-								var textLayerBuilder = new TextLayerBuilder({
-									textLayerDiv: page.textLayer[0],
-									pageIndex: page.id,
-									viewport: viewport
-								});
-
-								textLayerBuilder.setTextContent(page.textContent);
-								textLayerBuilder.renderLayer();
-								page.container.append(page.textLayer);
-
-								// Render the annotation layer...
-								// NOTE: Annotation div is inserted into the page div iff
-								// there are annotations in the current page. This is 
-								// handled by the AnnotationLayerBuilder.
-								var annotationLayerBuilder = new AnnotationsLayerBuilder({
-									pageDiv: page.container[0],
-									pdfPage: page.pdfPage,
-									linkService: self.pdfLinkService
-								});
-
-								annotationLayerBuilder.setupAnnotations(viewport);
-							}
-
-							self.PDFViewer_onPageRendered("success", page.id, self.pdf.numPages, "");
-
-							resolve({
-								pageID: page.id,
-								status: 1 // TODO: Make this a constant. Means "Page rendered"
-							});
-						}, function (message) {
-							page.rendered = false;
-							page.renderTask = null;
-
-							if(message === "cancelled") {
-								resolve({
-									pageID: page.id,
-									status: 3 // TODO: Make this a constant. Means "Page rendering cancelled"
-								});
-							} else {			
-								reject({
-									pageID: page.id,
-									message: "PDF.js: " + message
-								});
-							}
-						});
-					});
-				};
-
-				_ctrl.PDFPage_highlightItem = function (page, itemID, matchPos, text) {
-					var textLayer = page.textLayer;
-					if(textLayer === null) {
-						return;
-					}
-
-					var textDivs = textLayer.children();
-					var item = textDivs[itemID];
-
-					var before = item.childNodes[0].nodeValue.substr(0, matchPos);
-					var middle = item.childNodes[0].nodeValue.substr(matchPos, text.length);
-					var after = document.createTextNode(item.childNodes[0].nodeValue.substr(matchPos + text.length));
-
-					var highlight_span = document.createElement("span");
-					highlight_span.className = "highlight";
-
-					highlight_span.appendChild(document.createTextNode(middle));
-
-					item.childNodes[0].nodeValue = before;
-					item.childNodes[0].parentNode.insertBefore(after, item.childNodes[0].nextSibling);
-					item.childNodes[0].parentNode.insertBefore(highlight_span, item.childNodes[0].nextSibling);
-
-					// Scroll to item...
-					var parentContainer = page.container.parent()[0];
-
-					var curScrollTop = parentContainer.scrollTop;
-					var containerHeight = parentContainer.offsetHeight;
-
-					highlight_span.scrollIntoView();
-
-					var newScrollTop = parentContainer.scrollTop;
-
-					var scrolledDown = newScrollTop > curScrollTop;
-					var newScrollPosInOldViewport = curScrollTop + containerHeight > newScrollTop;
-					var scrolledToEnd = newScrollTop >= parentContainer.scrollHeight - containerHeight;
-
-					if(scrolledDown && newScrollPosInOldViewport && !scrolledToEnd) {
-						parentContainer.scrollTop = curScrollTop;
-					} else {
-						parentContainer.scrollTop -= containerHeight / 4;
-					}
-				};
-
 				_ctrl.PDFViewer_getAllPages = function (pdf, hasTextLayer, callback) {
 					var self = this,
 					    pageList = [],
@@ -370,7 +358,7 @@
 
 								var textContentTask = page.getTextContent();
 								textContentTask.then(function (textContent) {
-									pageList[page.pageIndex] = self.PDFPage_create(page, textContent);
+									pageList[page.pageIndex] = new PDFPage(page, textContent);
 
 									--remainingPages;
 									if(remainingPages === 0) {
@@ -385,7 +373,7 @@
 
 							var getPageTask = pdf.getPage(iPage + 1);
 							getPageTask.then(function (page) {
-								pageList[page.pageIndex] = self.PDFPage_create(page, null);
+								pageList[page.pageIndex] = new PDFPage(page, null);
 
 								--remainingPages;
 								if(remainingPages === 0) {
@@ -403,11 +391,11 @@
 					var lastActivePageID = Math.min(curPageID + distance, numPages - 1);
 
 					for(var iPage = 0;iPage < firstActivePageID;++iPage) {
-						this.PDFPage_clear(this.pages[iPage]);
+						this.pages[iPage].clear();
 					}
 
 					for(var iPage = lastActivePageID + 1;iPage < numPages;++iPage) {
-						this.PDFPage_clear(this.pages[iPage]);
+						this.pages[iPage].clear();
 					}
 				};
 
@@ -447,10 +435,10 @@
 					var numPages = this.pages.length;
 					for(var iPage = 0;iPage < numPages;++iPage) {
 						// Clear the page's contents...
-						this.PDFPage_clear(this.pages[iPage]);
+						this.pages[iPage].clear();
 
 						// Resize to current scale...
-						this.PDFPage_resizeToScale(this.pages[iPage], scale);
+						this.pages[iPage].resize(scale);
 					}
 
 					this.PDFViewer_highlightSearchResult(this.searchHighlightResultID);
@@ -465,6 +453,7 @@
 				};
 
 				_ctrl.PDFViewer_renderAllVisiblePages = function (scrollDir) {
+					var self = this;
 					var numPages = this.pages.length;
 					var currentPageID = 0;
 
@@ -472,8 +461,7 @@
 					for(var iPage = 0;iPage < numPages;++iPage) {
 						var page = this.pages[iPage];
 
-						var inViewport = this.PDFPage_isVisible(page);
-						if(inViewport) {
+						if(page.isVisible()) {
 							var parentContainer = page.container.parent()[0];
 							var pageTop = page.container[0].offsetTop - parentContainer.scrollTop;
 							if(pageTop <= parentContainer.offsetHeight / 2) {
@@ -481,7 +469,13 @@
 							}
 
 							atLeastOnePageInViewport = true;
-							this.PDFPage_render(page, _ctrl.scale);
+							page.render(_ctrl.scale, _ctrl.pdfLinkService, function (page, status) {
+								if(status === PDF_PAGE_RENDERED) {
+									self.PDFViewer_onPageRendered("success", page.id, self.pdf.numPages, "");
+								} else if (status === PDF_PAGE_RENDER_FAILED) {
+									self.PDFViewer_onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
+								}
+							});
 						} else {
 							if(atLeastOnePageInViewport) {
 								break;
@@ -492,7 +486,13 @@
 					if(scrollDir !== 0) {
 						var nextPageID = currentPageID + scrollDir;
 						if(nextPageID >= 0 && nextPageID < numPages) {
-							this.PDFPage_render(this.pages[nextPageID], _ctrl.scale);
+							this.pages[nextPageID].render(_ctrl.scale, _ctrl.pdfLinkService, function (page, status) {
+								if(status === PDF_PAGE_RENDERED) {
+									self.PDFViewer_onPageRendered("success", page.id, self.pdf.numPages, "");
+								} else if (status === PDF_PAGE_RENDER_FAILED) {
+									self.PDFViewer_onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
+								}
+							});
 						}
 					}
 
@@ -621,17 +621,21 @@
 					}
 
 					var self = this;
-					this.PDFPage_render(this.pages[result.pageID], this.scale).then(function (data) {
-						if(data.status === 3) {
-							return; // Page cancelled so no point in highlighting anything...
+					this.pages[result.pageID].render(_ctrl.scale, _ctrl.pdfLinkService, function (page, status) {
+						if(status === PDF_PAGE_RENDER_FAILED) {
+							self.PDFViewer_onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
+						} else if(status === PDF_PAGE_RENDER_CANCELLED) {
+							// Do nothing...
+						} else {
+							if(status === PDF_PAGE_RENDERED) {
+								self.PDFViewer_onPageRendered("success", page.id, self.pdf.numPages, "");
+							}
+
+							page.highlightTextItem(result.itemID, result.matchPos, self.searchTerm);
+
+							self.searchHighlightResultID = resultID;
+							self.PDFViewer_onSearch("done", self.searchHighlightResultID, self.searchResults.length, self.searchTerm);
 						}
-
-						self.PDFPage_highlightItem(self.pages[result.pageID], result.itemID, result.matchPos, self.searchTerm);
-						self.searchHighlightResultID = resultID;
-
-						self.PDFViewer_onSearch("done", self.searchHighlightResultID, self.searchResults.length, self.searchTerm);
-					}, function (data) {
-						self.PDFViewer_onSearch("failed", resultID, self.searchResults.length, "Failed to render page " + data.pageID);
 					});
 				};
 
