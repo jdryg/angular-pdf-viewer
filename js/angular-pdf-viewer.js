@@ -119,11 +119,22 @@
 			}
 		}
 	};
-	
+
+	// PDFPage.render() results...
 	var PDF_PAGE_RENDER_FAILED = -1;
 	var PDF_PAGE_RENDER_CANCELLED = 0;
 	var PDF_PAGE_RENDERED = 1;
 	var PDF_PAGE_ALREADY_RENDERED = 2;
+
+	// A LUT for zoom levels (because I cannot find a formula that works in all cases).
+	var PDF_ZOOM_LEVELS_LUT= [
+		0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 
+		1.0, 1.1, 1.3, 1.5, 1.7, 1.9, 
+		2.0, 2.2, 2.4, 2.6, 2.8, 
+		3.0, 3.3, 3.6, 3.9,
+		4.0, 4.5,
+		5.0
+	];
 
 	function PDFPage(pdfPage, textContent) {
 		this.id = pdfPage.pageIndex + 1;
@@ -214,6 +225,7 @@
 			}
 		},
 		render: function (scale, linkService, callback) {
+			var self = this;
 			if(this.rendered) {
 				if(this.renderTask === null) {
 					if(callback) {
@@ -222,7 +234,7 @@
 				} else {
 					this.renderTask.then(function () {
 						if(callback) {
-							callback(this, PDF_PAGE_ALREADY_RENDERED);
+							callback(self, PDF_PAGE_ALREADY_RENDERED);
 						}
 					});
 				}
@@ -239,7 +251,6 @@
 				viewport: viewport
 			});
 
-			var self = this;
 			this.renderTask.then(function () {
 				self.rendered = true;
 				self.renderTask = null;
@@ -299,32 +310,38 @@
 		this.scale = 1.0;
 		this.pdfLinkService = null;
 		this.pagesRefMap = {};
+		this.hasTextLayer = false;
 		this.searchResults = [];
 		this.searchTerm = "";
 		this.searchHighlightResultID = -1;
 		this.fitWidthScale = 1.0;
 		this.fitPageScale = 1.0;
-		this.searching = false;
-		this.lastScrollY = 0;
+		this.element = null;
+		this.pageMargin = 0;
+		this.currentPage = 0;
+		
+		this.api = new PDFViewerAPI(this);
 
-		// TODO: Rename those...
-		this.PDFViewer_onSearch = null;
-		this.PDFViewer_onPageRendered = null;
-		this.PDFViewer_onDataDownloaded = null;
-		this.PDFViewer_onCurrentPageChanged = null;
-		this.PDFViewer_passwordCallback = null;
+		// Hooks for the client...
+		this.onSearch = null;
+		this.onPageRendered = null;
+		this.onDataDownloaded = null;
+		this.onCurrentPageChanged = null;
+		this.passwordCallback = null;
 	}
 
 	PDFViewer.prototype = {
-		setUrl: function (url, element, initialScale, renderTextLayer, pageMargin, api) {
+		setUrl: function (url, element, initialScale, renderTextLayer, pageMargin) {
 			this.resetSearch();
 			this.pages = [];
-			this.lastScrollY = 0;
 			this.pdfLinkService = null;
 			this.pagesRefMap = {};
+			this.hasTextLayer = renderTextLayer;
+			this.element = element;
+			this.pageMargin = pageMargin;
 			
 			var self = this;
-			var getDocumentTask = PDFJS.getDocument(url, null, angular.bind(this, this.PDFViewer_passwordCallback), angular.bind(this, this.downloadProgress));
+			var getDocumentTask = PDFJS.getDocument(url, null, angular.bind(this, this.passwordCallback), angular.bind(this, this.downloadProgress));
 			getDocumentTask.then(function (pdf) {
 				self.pdf = pdf;
 
@@ -332,7 +349,7 @@
 				self.getAllPages(pdf, renderTextLayer, function (pageList, pagesRefMap) {
 					self.pages = pageList;
 					self.pagesRefMap = pagesRefMap;
-					self.pdfLinkService = new PDFLinkService(pagesRefMap, api);
+					self.pdfLinkService = new PDFLinkService(pagesRefMap, self.api);
 
 					// Append all page containers to the $element...
 					for(var iPage = 0;iPage < pageList.length; ++iPage) {
@@ -343,15 +360,17 @@
 					self.setContainerSize(initialScale, containerSize);
 				});
 			}, function (message) {
-				self.PDFViewer_onDataDownloaded("failed", 0, 0, "PDF.js: " + message);
+				self.onDataDownloaded("failed", 0, 0, "PDF.js: " + message);
 			});
 		},
-		setFile: function (file, element, initialScale, renderTextLayer, pageMargin, api) {
+		setFile: function (file, element, initialScale, renderTextLayer, pageMargin) {
 			this.resetSearch();
 			this.pages = [];
-			this.lastScrollY = 0;
 			this.pdfLinkService = null;
 			this.pagesRefMap = {};
+			this.hasTextLayer = renderTextLayer;
+			this.element = element;
+			this.pageMargin = pageMargin;
 
 			var self = this;
 			var reader = new FileReader();
@@ -359,7 +378,7 @@
 				var arrayBuffer = e.target.result;
 				var uint8Array = new Uint8Array(arrayBuffer);
 
-				var getDocumentTask = PDFJS.getDocument(uint8Array, null, angular.bind(self, self.PDFViewer_passwordCallback), angular.bind(self, self.downloadProgress));
+				var getDocumentTask = PDFJS.getDocument(uint8Array, null, angular.bind(self, self.passwordCallback), angular.bind(self, self.downloadProgress));
 				getDocumentTask.then(function (pdf) {
 					self.pdf = pdf;
 
@@ -367,7 +386,7 @@
 					self.getAllPages(pdf, renderTextLayer, function (pageList, pagesRefMap) {
 						self.pages = pageList;
 						self.pagesRefMap = pagesRefMap;
-						self.pdfLinkService = new PDFLinkService(pagesRefMap, api);
+						self.pdfLinkService = new PDFLinkService(pagesRefMap, self.api);
 
 						// Append all page containers to the $element...
 						for(var iPage = 0;iPage < pageList.length; ++iPage) {
@@ -378,7 +397,7 @@
 						self.setContainerSize(initialScale, containerSize);
 					});
 				}, function (message) {
-					self.PDFViewer_onDataDownloaded("failed", 0, 0, "PDF.js: " + message);
+					self.onDataDownloaded("failed", 0, 0, "PDF.js: " + message);
 				});
 			};
 
@@ -408,11 +427,14 @@
 							break;
 					}
 
-					self.PDFViewer_onDataDownloaded("failed", 0, 0, message);
+					self.onDataDownloaded("failed", 0, 0, message);
 				}
 			};
 
 			reader.readAsArrayBuffer(file);
+		},
+		getAPI: function () {
+			return this.api;
 		},
 		getAllPages: function (pdf, hasTextLayer, callback) {
 			var pageList = [],
@@ -540,9 +562,9 @@
 					atLeastOnePageInViewport = true;
 					page.render(this.scale, this.pdfLinkService, function (page, status) {
 						if(status === PDF_PAGE_RENDERED) {
-							self.PDFViewer_onPageRendered("success", page.id, self.pdf.numPages, "");
+							self.onPageRendered("success", page.id, self.pdf.numPages, "");
 						} else if (status === PDF_PAGE_RENDER_FAILED) {
-							self.PDFViewer_onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
+							self.onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
 						}
 					});
 				} else {
@@ -557,9 +579,9 @@
 				if(nextPageID >= 0 && nextPageID < numPages) {
 					this.pages[nextPageID].render(this.scale, this.pdfLinkService, function (page, status) {
 						if(status === PDF_PAGE_RENDERED) {
-							self.PDFViewer_onPageRendered("success", page.id, self.pdf.numPages, "");
+							self.onPageRendered("success", page.id, self.pdf.numPages, "");
 						} else if (status === PDF_PAGE_RENDER_FAILED) {
-							self.PDFViewer_onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
+							self.onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
 						}
 					});
 				}
@@ -567,7 +589,8 @@
 
 			this.removeDistantPages(currentPageID, 5);
 
-			this.PDFViewer_onCurrentPageChanged(currentPageID + 1);
+			this.currentPage = currentPageID + 1;
+			this.onCurrentPageChanged(currentPageID + 1);
 		},
 		resetSearch: function () {
 			this.clearLastSearchHighlight();
@@ -576,9 +599,14 @@
 			this.searchTerm = "";
 			this.searchHighlightResultID = -1;
 
-			this.PDFViewer_onSearch("reset", 0, 0, "");
+			this.onSearch("reset", 0, 0, "");
 		},
 		search: function (text) {
+			if(!this.hasTextLayer) {
+				this.onSearch("failed", 0, 0, "The viewer doesn't have a text layer.");
+				return;
+			}
+
 			this.resetSearch();
 			this.searchTerm = text;
 
@@ -623,19 +651,25 @@
 			if(numOccurences > 0) {
 				this.highlightSearchResult(0);
 			} else {
-				this.PDFViewer_onSearch("done", 0, 0, text);
+				this.onSearch("done", 0, 0, text);
 			}
 		},
 		highlightSearchResult: function (resultID) {
+			if(!this.hasTextLayer) {
+				this.onSearch("failed", 0, 0, "The viewer doesn't have a text layer.");
+				return;
+			}
+
 			var self = this;
+			var prevHighlightID = this.searchHighlightResultID;
 
 			this.clearLastSearchHighlight();
 
 			if(resultID < 0 || resultID >= this.searchResults.length) {
 				if(resultID === -1 && this.searchResults.length === 0) {
-					this.PDFViewer_onSearch("done", -1, 0, this.searchTerm);
+					this.onSearch("done", -1, 0, this.searchTerm);
 				} else {
-					this.PDFViewer_onSearch("failed", resultID, this.searchResults.length, "Invalid search result index");
+					this.onSearch("failed", resultID, this.searchResults.length, "Invalid search result index");
 				}
 
 				return;
@@ -643,25 +677,26 @@
 
 			var result = this.searchResults[resultID];
 			if(result.pageID < 0 || result.pageID >= this.pages.length) {
-				this.PDFViewer_onSearch("failed", resultID, this.searchResults.length, "Invalid page index in search result");
+				this.onSearch("failed", resultID, this.searchResults.length, "Invalid page index in search result");
 				return;
 			}
 
 			var self = this;
 			this.pages[result.pageID].render(this.scale, this.pdfLinkService, function (page, status) {
 				if(status === PDF_PAGE_RENDER_FAILED) {
-					self.PDFViewer_onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
+					self.onPageRendered("failed", page.id, self.pdf.numPages, "Failed to render page.");
 				} else if(status === PDF_PAGE_RENDER_CANCELLED) {
-					// Do nothing...
+					// Revert to the previous result index because otherwise searching might get stuck.
+					self.searchHighlightResultID = prevHighlightID;
 				} else {
 					if(status === PDF_PAGE_RENDERED) {
-						self.PDFViewer_onPageRendered("success", page.id, self.pdf.numPages, "");
+						self.onPageRendered("success", page.id, self.pdf.numPages, "");
 					}
 
 					page.highlightTextItem(result.itemID, result.matchPos, self.searchTerm);
 
 					self.searchHighlightResultID = resultID;
-					self.PDFViewer_onSearch("done", self.searchHighlightResultID, self.searchResults.length, self.searchTerm);
+					self.onSearch("done", self.searchHighlightResultID, self.searchResults.length, self.searchTerm);
 				}
 			});
 		},
@@ -714,22 +749,139 @@
 				total = progressData.total;
 			}
 
-			this.PDFViewer_onDataDownloaded("loading", progressData.loaded, total, "");
+			this.onDataDownloaded("loading", progressData.loaded, total, "");
 		}
+	};
+	
+	function PDFViewerAPI(viewer) {
+		this.viewer = viewer;
+	};
+	
+	PDFViewerAPI.prototype = {
+		getNextZoomInScale: function (scale) {
+			var newScale = scale;
+			var numZoomLevels = PDF_ZOOM_LEVELS_LUT.length;
+			for(var i = 0;i < numZoomLevels;++i) {
+				if(PDF_ZOOM_LEVELS_LUT[i] > scale) {
+					newScale = PDF_ZOOM_LEVELS_LUT[i];
+					break;
+				}
+			}
+
+			if(scale < this.viewer.fitWidthScale && newScale > this.viewer.fitWidthScale) {
+				return {
+					value: this.viewer.fitWidthScale,
+					label: "Fit width"
+				};
+			} else if(scale < this.viewer.fitPageScale && newScale > this.viewer.fitPageScale) {
+				return {
+					value: this.viewer.fitPageScale,
+					label: "Fit page"
+				};
+			}
+
+			return {
+				value: newScale,
+				label: (newScale * 100.0).toFixed(0) + "%"
+			};
+		},
+		getNextZoomOutScale: function (scale) {
+			var newScale = scale;
+			var numZoomLevels = PDF_ZOOM_LEVELS_LUT.length;
+			for(var i = numZoomLevels - 1; i >= 0;--i) {
+				if(PDF_ZOOM_LEVELS_LUT[i] < scale) {
+					newScale = PDF_ZOOM_LEVELS_LUT[i];
+					break;
+				}
+			}
+
+			if(scale > this.viewer.fitWidthScale && newScale < this.viewer.fitWidthScale) {
+				return {
+					value: this.viewer.fitWidthScale,
+					label: "Fit width"
+				};
+			} else if(scale > this.viewer.fitPageScale && newScale < this.viewer.fitPageScale) {
+				return {
+					value: this.viewer.fitPageScale,
+					label: "Fit page"
+				};
+			}
+
+			return {
+				value: newScale,
+				label: (newScale * 100.0).toFixed(0) + "%"
+			};
+		},
+		zoomTo: function (scale) {
+			// TODO: Move this inside PDFViewer.setScale()
+			if(isNaN(parseFloat(scale))) {
+				// scale isn't a valid floating point number. Let
+				// calcScale() handle it (e.g. fit_width or fit_page).
+				var containerSize = getElementInnerSize(this.viewer.element, this.viewer.pageMargin);
+				scale = this.viewer.calcScale(scale, containerSize);
+			}
+
+			this.viewer.setScale(scale);
+		},
+		getZoomLevel: function () {
+			return this.viewer.scale;
+		},
+		goToPage: function (pageIndex) {
+			if(this.viewer.pdf === null || pageIndex < 1 || pageIndex > this.viewer.pdf.numPages) {
+				return;
+			}
+
+			this.viewer.pages[pageIndex - 1].container[0].scrollIntoView();
+		},
+		goToNextPage: function () {
+			if(this.viewer.pdf === null) {
+				return;
+			}
+
+			this.goToPage(this.viewer.currentPage + 1);
+		},
+		goToPrevPage: function () {
+			if(this.viewer.pdf === null) {
+				return;
+			}
+
+			this.goToPage(this.viewer.currentPage - 1);
+		},
+		getNumPages: function () {
+			if(this.viewer.pdf === null) {
+				return 0;
+			}
+
+			return this.viewer.pdf.numPages;
+		},
+		findNext: function () {
+			if(this.viewer.searchHighlightResultID === -1) {
+				return;
+			}
+
+			var nextHighlightID = this.viewer.searchHighlightResultID + 1;
+			if(nextHighlightID >= this.viewer.searchResults.length) {
+				nextHighlightID = 0;
+			}
+
+			this.viewer.highlightSearchResult(nextHighlightID);
+		},
+		findPrev: function () {
+			if(this.viewer.searchHighlightResultID === -1) {
+				return;
+			}
+
+			var prevHighlightID = this.viewer.searchHighlightResultID - 1;
+			if(prevHighlightID < 0) {
+				prevHighlightID = this.viewer.searchResults.length - 1;
+			}
+
+			this.viewer.highlightSearchResult(prevHighlightID);
+		}	
 	};
 
 	angular.module("angular-pdf-viewer", []).
 	directive("pdfViewer", [function () {
-		// HACK: A LUT for zoom levels because I cannot find a formula that works in all cases.
-		var zoomLevelsLUT = [
-			0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 
-			1.0, 1.1, 1.3, 1.5, 1.7, 1.9, 
-			2.0, 2.2, 2.4, 2.6, 2.8, 
-			3.0, 3.3, 3.6, 3.9,
-			4.0, 4.5,
-			5.0
-		];
-
 		var pageMargin = 10;
 
 		return {
@@ -748,6 +900,8 @@
 				currentPage: "="
 			},
 			controller: ['$scope', '$element', function ($scope, $element) {
+				$scope.lastScrollY = 0;
+
 				$scope.onPageRendered = function (status, pageID, numPages, message) {
 					this.onProgress("render", status, pageID, numPages, message);
 				};
@@ -756,27 +910,21 @@
 					this.onProgress("download", status, loaded, total, message);
 				};
 
+				$scope.onCurrentPageChanged = function (pageID) {
+					this.currentPage = pageID;
+				};
+
 				$scope.onSearch = function (status, curResultID, totalResults, message) {
 					if(status === "searching") {
-						this.searching = true;
 					} else if(status === "failed") {
-						this.searching = false;
-						console.log("Searching failed. " + message);
+						console.log("Search failed: " + message);
 					} else if(status === "done") {
-						this.searching = false;
-						this.searchTerm = message;
 						this.searchResultId = curResultID + 1;
 						this.searchNumOccurences = totalResults;
 					} else if(status === "reset") {
-						this.searching = false;
-						this.searchTerm = "";
 						this.searchResultId = 0;
 						this.searchNumOccurences = 0;
 					}
-				};
-				
-				$scope.onCurrentPageChanged = function (pageID) {
-					this.currentPage = pageID;
 				};
 
 				$scope.getPDFPassword = function (passwordFunc, reason) {
@@ -812,11 +960,13 @@
 				};
 
 				$scope.viewer = new PDFViewer();
-				$scope.viewer.PDFViewer_onSearch = angular.bind($scope, $scope.onSearch);
-				$scope.viewer.PDFViewer_onPageRendered = angular.bind($scope, $scope.onPageRendered);
-				$scope.viewer.PDFViewer_onDataDownloaded = angular.bind($scope, $scope.onDataDownloaded);
-				$scope.viewer.PDFViewer_onCurrentPageChanged = angular.bind($scope, $scope.onCurrentPageChanged);
-				$scope.viewer.PDFViewer_passwordCallback = angular.bind($scope, $scope.getPDFPassword);
+				$scope.viewer.onSearch = angular.bind($scope, $scope.onSearch);
+				$scope.viewer.onPageRendered = angular.bind($scope, $scope.onPageRendered);
+				$scope.viewer.onDataDownloaded = angular.bind($scope, $scope.onDataDownloaded);
+				$scope.viewer.onCurrentPageChanged = angular.bind($scope, $scope.onCurrentPageChanged);
+				$scope.viewer.passwordCallback = angular.bind($scope, $scope.getPDFPassword);
+				
+				$scope.api = $scope.viewer.getAPI();
 
 				$scope.shouldRenderTextLayer = function () {
 					if(this.renderTextLayer === "" || this.renderTextLayer === undefined || this.renderTextLayer === null || this.renderTextLayer.toLowerCase() === "false") {
@@ -826,162 +976,29 @@
 					return true;
 				};
 
-				$scope.resetSearch = function () {
-					this.viewer.resetSearch();
-				};
-
-				$scope.searchPDF = function (text) {
-					if(!this.shouldRenderTextLayer()) {
-						return;
-					}
-
-					this.viewer.search(text);
-				};
-
 				$scope.onPDFSrcChanged = function () {
 					$element.empty();
-					this.viewer.setUrl(this.src, $element, this.initialScale, this.shouldRenderTextLayer(), pageMargin, this.api);
+					this.lastScrollY = 0;
+					this.viewer.setUrl(this.src, $element, this.initialScale, this.shouldRenderTextLayer(), pageMargin);
 				};
 
 				$scope.onPDFFileChanged = function () {
 					$element.empty();
-					this.viewer.setFile(this.file, $element, this.initialScale, this.shouldRenderTextLayer(), pageMargin, this.api);
+					this.lastScrollY = 0;
+					this.viewer.setFile(this.file, $element, this.initialScale, this.shouldRenderTextLayer(), pageMargin);
 				};
 
 				$element.bind("scroll", function (event) {
 					$scope.$apply(function () {
-						var scrollDir = $element[0].scrollTop - $scope.viewer.lastScrollY;
-						$scope.viewer.lastScrollY = $element[0].scrollTop;
-						$scope.viewer.renderAllVisiblePages(scrollDir > 0 ? 1 : (scrollDir < 0 ? -1 : 0));
+						var scrollTop = $element[0].scrollTop;
+
+						var scrollDir = scrollTop - $scope.lastScrollY;
+						$scope.lastScrollY = scrollTop;
+
+						var normalizedScrollDir = scrollDir > 0 ? 1 : (scrollDir < 0 ? -1 : 0);
+						$scope.viewer.renderAllVisiblePages(normalizedScrollDir);
 					});
 				});
-
-				// API...
-				$scope.api = (function (viewer) {
-					return {
-						getNextZoomInScale: function (scale) {
-							// HACK: This should be possible using an analytic formula!
-							var newScale = scale;
-							var numZoomLevels = zoomLevelsLUT.length;
-							for(var i = 0;i < numZoomLevels;++i) {
-								if(zoomLevelsLUT[i] > scale) {
-									newScale = zoomLevelsLUT[i];
-									break;
-								}
-							}
-
-							if(scale < viewer.viewer.fitWidthScale && newScale > viewer.viewer.fitWidthScale) {
-								return {
-									value: viewer.viewer.fitWidthScale,
-									label: "Fit width"
-								};
-							} else if(scale < viewer.viewer.fitPageScale && newScale > viewer.viewer.fitPageScale) {
-								return {
-									value: viewer.viewer.fitPageScale,
-									label: "Fit page"
-								};
-							}
-
-							return {
-								value: newScale,
-								label: (newScale * 100.0).toFixed(0) + "%"
-							};
-						},
-						getNextZoomOutScale: function (scale) {
-							// HACK: This should be possible using an analytic formula!
-							var newScale = scale;
-							var numZoomLevels = zoomLevelsLUT.length;
-							for(var i = numZoomLevels - 1; i >= 0;--i) {
-								if(zoomLevelsLUT[i] < scale) {
-									newScale = zoomLevelsLUT[i];
-									break;
-								}
-							}
-
-							if(scale > viewer.viewer.fitWidthScale && newScale < viewer.viewer.fitWidthScale) {
-								return {
-									value: viewer.viewer.fitWidthScale,
-									label: "Fit width"
-								};
-							} else if(scale > viewer.viewer.fitPageScale && newScale < viewer.viewer.fitPageScale) {
-								return {
-									value: viewer.viewer.fitPageScale,
-									label: "Fit page"
-								};
-							}
-
-							return {
-								value: newScale,
-								label: (newScale * 100.0).toFixed(0) + "%"
-							};
-						},
-						zoomTo: function (scale) {
-							if(isNaN(parseFloat(scale))) {
-								// scale isn't a valid floating point number. Let
-								// PDFViewer.calcScale() handle it (e.g. fit_width or fit_page).
-								var containerSize = getElementInnerSize($element, pageMargin);
-								scale = viewer.viewer.calcScale(scale, containerSize);
-							}
-
-							viewer.viewer.setScale(scale);
-						},
-						getZoomLevel: function () {
-							return viewer.viewer.scale;
-						},
-						goToPage: function (pageIndex) {
-							if(viewer.viewer.pdf === null || pageIndex < 1 || pageIndex > viewer.viewer.pdf.numPages) {
-								return;
-							}
-
-							viewer.viewer.pages[pageIndex - 1].container[0].scrollIntoView();
-						},
-						goToNextPage: function () {
-							if(viewer.viewer.pdf === null) {
-								return;
-							}
-
-							this.goToPage(viewer.currentPage + 1);
-						},
-						goToPrevPage: function () {
-							if(viewer.viewer.pdf === null) {
-								return;
-							}
-
-							this.goToPage(viewer.currentPage - 1);
-						},
-						getNumPages: function () {
-							if(viewer.viewer.pdf === null) {
-								return 0;
-							}
-
-							return viewer.viewer.pdf.numPages;
-						},
-						findNext: function () {
-							if(viewer.viewer.searching) {
-								return;
-							}
-
-							var nextHighlightID = viewer.searchResultId + 1;
-							if(nextHighlightID > viewer.viewer.searchResults.length) {
-								nextHighlightID = 1;
-							}
-
-							viewer.viewer.highlightSearchResult(nextHighlightID - 1);
-						},
-						findPrev: function () {
-							if(viewer.viewer.searching) {
-								return;
-							}
-
-							var prevHighlightID = viewer.searchResultId - 1;
-							if(prevHighlightID <= 0) {
-								prevHighlightID = viewer.viewer.searchResults.length;
-							}
-
-							viewer.viewer.highlightSearchResult(prevHighlightID - 1);
-						}
-					};
-				})($scope);
 			}],
 			link: function (scope, element, attrs) {
 				attrs.$observe('src', function (src) {
@@ -998,9 +1015,9 @@
 
 				attrs.$observe("searchTerm", function (searchTerm) {
 					if (searchTerm !== undefined && searchTerm !== null && searchTerm !== '') {
-						scope.searchPDF(searchTerm);
+						scope.viewer.search(searchTerm);
 					} else {
-						scope.resetSearch();
+						scope.viewer.resetSearch();
 					}
 				});
 			}
