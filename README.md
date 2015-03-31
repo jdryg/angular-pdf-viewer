@@ -3,6 +3,8 @@ Just another Angular directive for displaying PDF files using PDF.js
 
 [Live demo](http://jdryg.github.io/angular-pdf-viewer)
 
+If you want to try out different PDFs, check [TCPDF examples](http://www.tcpdf.org/examples.php)
+
 #### Features
 - Continuous view 
  * All pages are inserted into the DOM when the PDF is loaded.
@@ -22,7 +24,7 @@ Just another Angular directive for displaying PDF files using PDF.js
 - Password protected PDFs
  * You should specify a callback (password-callback) to the directive, which will be called every time a password protected PDF is encountered. It's up to you to decide if you are going to show a prompt dialog, or handle it transparently from the user.
 - Searching (with highlighting)
- * Requires the text layer)
+ * Requires the text layer to be present
 
 #### Directive attributes
 - src: (input) URL to the PDF file
@@ -68,7 +70,8 @@ TODO
 - PDF.js (including text_layer_builder.js, annotations_layer_builder.js and ui_utils.js from PDF.js web folder)
 
 #### License
-angular-pdf-viewer.js is copyright © 2015 The owner of this repo.
+angular-pdf-viewer.js is copyright © 2015 jdryg
+
 The rest of the code (PDF.js, Angular.js, etc.) isn't covered by this license! If you don't agree with their licenses, I guess you shouldn't use this code. But I'm not a lawyer, so don't take my word on that :)
 
 angular-pdf-viewer.js is free. You can redistribute it and/or modify it under the terms of the Do What The Fuck You Want To Public License, Version 2, as published by Sam Hocevar. See the COPYING file for more details.
